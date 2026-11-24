@@ -8,6 +8,7 @@ export class ImageMosaic {
     this.base = 3;
     this.exp = 3;
     this.gridDims = { x: 3, y: 3, z: 3 };
+    this.reliefStrength = 0.0;
 
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
@@ -23,10 +24,52 @@ export class ImageMosaic {
     this.uniforms = {
       uMosaicTex: { value: this.texture },
       uGridDims: { value: new THREE.Vector3(3, 3, 3) },
-      uMosaicEnabled: { value: 0.0 }
+      uMosaicEnabled: { value: 0.0 },
+      uReliefStrength: { value: 0.0 }
     };
 
-    this._patchedMaterials = new WeakSet();
+    this._setupReliefUI();
+  }
+
+  _setupReliefUI() {
+    const labelEl = document.getElementById('mosaic-res-label');
+    const parent = labelEl?.parentElement;
+    if (!parent || document.getElementById('mosaic-relief-input')) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.style.marginTop = '8px';
+    wrapper.innerHTML = `
+      <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 2px;">
+        <label for="mosaic-relief-input">Relevo 3D (Pin-Art)</label>
+        <span id="mosaic-relief-val">0.00</span>
+      </div>
+      <input type="range" id="mosaic-relief-input" min="-2.2" max="2.2" step="0.05" value="0" style="width: 100%;" />
+    `;
+    parent.appendChild(wrapper);
+
+    this.reliefInput = document.getElementById('mosaic-relief-input');
+    this.reliefValEl = document.getElementById('mosaic-relief-val');
+
+    this.reliefInput?.addEventListener('input', (e) => {
+      this.setReliefStrength(parseFloat(e.target.value) || 0);
+    });
+  }
+
+  setReliefStrength(val) {
+    this.reliefStrength = val;
+    this.uniforms.uReliefStrength.value = val;
+    if (this.engine) {
+      this.engine.reliefStrength = val;
+      if (this.engine.gpuUniforms) {
+        this.engine.gpuUniforms.uReliefStrength.value = val;
+      }
+    }
+    if (this.reliefInput && Math.abs(parseFloat(this.reliefInput.value) - val) > 0.01) {
+      this.reliefInput.value = String(val);
+    }
+    if (this.reliefValEl) {
+      this.reliefValEl.textContent = `${val >= 0 ? '+' : ''}${val.toFixed(2)}`;
+    }
   }
 
   loadFromFile(file) {
@@ -39,10 +82,19 @@ export class ImageMosaic {
           this.sourceImage = img;
           this.enabled = true;
           this.uniforms.uMosaicEnabled.value = 1.0;
-          this.syncWithEngine();
-          if (typeof this.engine?.refreshTransforms === 'function') {
-            this.engine.refreshTransforms();
+
+          if (this.engine) {
+            this.engine.baseBloomStrength = 0.14;
+            if (this.engine.gpuUniforms) {
+              this.engine.gpuUniforms.uMosaicEnabled.value = 1.0;
+            }
           }
+
+          if (Math.abs(this.reliefStrength) < 0.01) {
+            this.setReliefStrength(0.65);
+          }
+
+          this.syncWithEngine();
           resolve(img);
         };
         img.onerror = (err) => reject(err);
@@ -57,12 +109,15 @@ export class ImageMosaic {
     this.sourceImage = null;
     this.enabled = false;
     this.uniforms.uMosaicEnabled.value = 0.0;
+    this.setReliefStrength(0.0);
+    if (this.engine) {
+      this.engine.baseBloomStrength = 0.42;
+      if (this.engine.gpuUniforms) {
+        this.engine.gpuUniforms.uMosaicEnabled.value = 0.0;
+      }
+    }
   }
 
-  /**
-   * Calcula quantas subdivisões cada eixo (X, Y, Z) recebe dado (base, exp).
-   * Ex.: base=3, exp=6 -> 2 camadas por eixo -> 3^2 = 9x9x9.
-   */
   _computeGridDims(base, exp) {
     if (exp <= 0 || base <= 1) return { x: 1, y: 1, z: 1 };
     const layersX = Math.ceil(exp / 3);
@@ -84,12 +139,17 @@ export class ImageMosaic {
     this.exp = Math.max(0, expOverride ?? parseInt(expInput?.value, 10) ?? this.exp);
     this.gridDims = this._computeGridDims(this.base, this.exp);
 
-    this._resampleImage();
-    this._attachToInstancedMesh();
+    this.uniforms.uGridDims.value.set(this.gridDims.x, this.gridDims.y, this.gridDims.z);
+    if (this.engine?.gpuUniforms) {
+      this.engine.gpuUniforms.uGridDims.value.set(this.gridDims.x, this.gridDims.y, this.gridDims.z);
+    }
+
+    if (this.enabled && this.sourceImage) {
+      this._resampleImage();
+    }
   }
 
   _resampleImage() {
-    // Resolução da textura acompanha a maior subdivisão axial (ex.: 9x9, 27x27, etc.)
     const res = Math.max(1, this.gridDims.x, this.gridDims.y, this.gridDims.z);
     this.canvas.width = res;
     this.canvas.height = res;
@@ -125,155 +185,8 @@ export class ImageMosaic {
 
     this.texture = newTex;
     this.uniforms.uMosaicTex.value = newTex;
-    this.uniforms.uGridDims.value.set(
-      this.gridDims.x,
-      this.gridDims.y,
-      this.gridDims.z
-    );
-  }
-
-  _findInstancedMesh() {
-    if (this.engine?.mesh?.isInstancedMesh) return this.engine.mesh;
-    if (this.engine?.instancedMesh?.isInstancedMesh) return this.engine.instancedMesh;
-    let found = null;
-    const root = this.engine?.rootGroup || this.engine?.scene;
-    if (root && typeof root.traverse === 'function') {
-      root.traverse((obj) => {
-        if (!found && obj.isInstancedMesh) found = obj;
-      });
+    if (this.engine?.gpuUniforms) {
+      this.engine.gpuUniforms.uMosaicTex.value = newTex;
     }
-    return found;
-  }
-
-  _attachToInstancedMesh() {
-    const instMesh = this._findInstancedMesh();
-    if (!instMesh) return;
-
-    const blocks = this.engine?.blocksData || [];
-    const count = Math.max(instMesh.count, blocks.length);
-    const b = this.base;
-
-    // Acumula coordenadas hierárquicas [X1, Y1, Z1, X2, Y2, Z2...] em base b
-    const coords = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) {
-      const blk = blocks[i];
-      let gx = 0;
-      let gy = 0;
-      let gz = 0;
-
-      if (blk && Array.isArray(blk.coords) && blk.coords.length > 0) {
-        for (let d = 0; d < blk.coords.length; d++) {
-          const val = blk.coords[d] ?? 0;
-          const axis = d % 3;
-          if (axis === 0) gx = gx * b + val;
-          else if (axis === 1) gy = gy * b + val;
-          else gz = gz * b + val;
-        }
-      } else {
-        gx = i % this.gridDims.x;
-        gy = Math.floor(i / this.gridDims.x) % this.gridDims.y;
-        gz = Math.floor(i / (this.gridDims.x * this.gridDims.y)) % this.gridDims.z;
-      }
-
-      coords[i * 3] = gx;
-      coords[i * 3 + 1] = gy;
-      coords[i * 3 + 2] = gz;
-    }
-
-    instMesh.geometry.setAttribute(
-      'aGridCoord',
-      new THREE.InstancedBufferAttribute(coords, 3)
-    );
-
-    const materials = Array.isArray(instMesh.material)
-      ? instMesh.material
-      : [instMesh.material];
-
-    materials.forEach((mat) => {
-      if (!mat || this._patchedMaterials.has(mat)) return;
-      this._patchedMaterials.add(mat);
-
-      mat.onBeforeCompile = (shader) => {
-        shader.uniforms.uMosaicTex = this.uniforms.uMosaicTex;
-        shader.uniforms.uGridDims = this.uniforms.uGridDims;
-        shader.uniforms.uMosaicEnabled = this.uniforms.uMosaicEnabled;
-
-        shader.vertexShader = shader.vertexShader
-          .replace(
-            '#include <common>',
-            `#include <common>
-            attribute vec3 aGridCoord;
-            varying vec3 vGridCoord;
-            varying vec3 vLocalNormal;`
-          )
-          .replace(
-            '#include <begin_vertex>',
-            `#include <begin_vertex>
-            vGridCoord = aGridCoord;
-            vLocalNormal = normal;`
-          );
-
-        shader.fragmentShader = shader.fragmentShader
-          .replace(
-            '#include <common>',
-            `#include <common>
-            uniform sampler2D uMosaicTex;
-            uniform vec3 uGridDims;
-            uniform float uMosaicEnabled;
-            varying vec3 vGridCoord;
-            varying vec3 vLocalNormal;`
-          )
-          .replace(
-            '#include <color_fragment>',
-            `#include <color_fragment>
-            if (uMosaicEnabled > 0.5) {
-              vec3 n = vLocalNormal;
-              vec2 cell = vec2(0.0);
-              vec2 faceDims = vec2(1.0);
-              bool isOuterFace = false;
-              vec3 maxIdx = max(vec3(0.0), uGridDims - 1.0);
-
-              if (abs(n.z) > 0.5) {
-                faceDims = vec2(uGridDims.x, uGridDims.y);
-                if (n.z > 0.0) {
-                  cell = vec2(vGridCoord.x, vGridCoord.y);
-                  isOuterFace = (vGridCoord.z >= maxIdx.z - 0.1);
-                } else {
-                  cell = vec2(maxIdx.x - vGridCoord.x, vGridCoord.y);
-                  isOuterFace = (vGridCoord.z <= 0.1);
-                }
-              } else if (abs(n.x) > 0.5) {
-                faceDims = vec2(uGridDims.z, uGridDims.y);
-                if (n.x > 0.0) {
-                  cell = vec2(maxIdx.z - vGridCoord.z, vGridCoord.y);
-                  isOuterFace = (vGridCoord.x >= maxIdx.x - 0.1);
-                } else {
-                  cell = vec2(vGridCoord.z, vGridCoord.y);
-                  isOuterFace = (vGridCoord.x <= 0.1);
-                }
-              } else {
-                faceDims = vec2(uGridDims.x, uGridDims.z);
-                if (n.y > 0.0) {
-                  cell = vec2(vGridCoord.x, maxIdx.z - vGridCoord.z);
-                  isOuterFace = (vGridCoord.y >= maxIdx.y - 0.1);
-                } else {
-                  cell = vec2(vGridCoord.x, vGridCoord.z);
-                  isOuterFace = (vGridCoord.y <= 0.1);
-                }
-              }
-
-              if (isOuterFace) {
-                vec2 sampleUV = (cell + 0.5) / max(vec2(1.0), faceDims);
-                diffuseColor.rgb = texture2D(uMosaicTex, sampleUV).rgb;
-              } else {
-                diffuseColor.rgb = vec3(0.08, 0.09, 0.13);
-              }
-            }`
-          );
-      };
-
-      mat.customProgramCacheKey = () => 'exponential-cube-mosaic-v3';
-      mat.needsUpdate = true;
-    });
   }
 }

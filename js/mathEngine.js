@@ -32,10 +32,6 @@ export function isPrime(num) {
   return true;
 }
 
-/**
- * Estima quantos blocos sobreviverão após o filtro para permitir expoentes
- * muito maiores nos modos 'shell' e 'menger' sem estourar a memória.
- */
 function estimateFilteredCount(base, depth, filterMode) {
   if (depth === 0 || base <= 1) return 1;
 
@@ -61,7 +57,7 @@ function estimateFilteredCount(base, depth, filterMode) {
   }
 
   if (filterMode === 'primes') {
-    return total / Math.max(2, Math.log(total));
+    return Math.ceil(total / Math.max(2, Math.log(total))) + 64;
   }
 
   return total;
@@ -76,13 +72,45 @@ export function generateSubdivision(base, exp, gapRatio, maxInstances, filterMod
     }
   }
 
-  // Pré-calcula potências de base para índice linear O(depth) sem visitar ramos podados
-  const powTable = new Array(maxDepth);
+  let capacity = Math.max(16, Math.ceil(estimateFilteredCount(base, maxDepth, filterMode) * 1.05));
+
+  let px = new Float32Array(capacity);
+  let py = new Float32Array(capacity);
+  let pz = new Float32Array(capacity);
+  let startDeltaX = new Float32Array(capacity);
+  let startDeltaY = new Float32Array(capacity);
+  let startDeltaZ = new Float32Array(capacity);
+  let sxArr = new Float32Array(capacity);
+  let syArr = new Float32Array(capacity);
+  let szArr = new Float32Array(capacity);
+  let hueArr = new Float32Array(capacity);
+  let packedGrid = new Float32Array(capacity);
+  let linearIndices = new Float64Array(capacity);
+
+  function ensureCapacity() {
+    if (count < capacity) return;
+    capacity = Math.ceil(capacity * 1.5);
+    const growF32 = (old) => { const n = new Float32Array(capacity); n.set(old); return n; };
+    const growF64 = (old) => { const n = new Float64Array(capacity); n.set(old); return n; };
+    px = growF32(px);
+    py = growF32(py);
+    pz = growF32(pz);
+    startDeltaX = growF32(startDeltaX);
+    startDeltaY = growF32(startDeltaY);
+    startDeltaZ = growF32(startDeltaZ);
+    sxArr = growF32(sxArr);
+    syArr = growF32(syArr);
+    szArr = growF32(szArr);
+    hueArr = growF32(hueArr);
+    packedGrid = growF32(packedGrid);
+    linearIndices = growF64(linearIndices);
+  }
+
+  const powTable = new Float64Array(maxDepth);
   for (let d = 0; d < maxDepth; d++) {
     powTable[d] = Math.pow(base, maxDepth - 1 - d);
   }
 
-  // Pré-calcula frações de escala e deslocamento por profundidade
   const childFracs = new Float64Array(maxDepth);
   const stepFracs = new Float64Array(maxDepth);
   for (let step = 0; step < maxDepth; step++) {
@@ -93,14 +121,14 @@ export function generateSubdivision(base, exp, gapRatio, maxInstances, filterMod
     stepFracs[step] = childFracs[step] + effectiveGap;
   }
 
-  const blocks = [];
   const coords = new Int32Array(maxDepth);
   const isShellMode = filterMode === 'shell' && base > 1;
   const isMengerMode = filterMode === 'menger' && base >= 3;
   const isPrimeMode = filterMode === 'primes';
   const mengerMid = Math.floor(base / 2);
 
-  // Máscaras de borda global por eixo: bit 1 = ainda pode tocar min (0), bit 2 = ainda pode tocar max (b-1)
+  let count = 0;
+
   function subdivide(
     step,
     cx,
@@ -116,43 +144,34 @@ export function generateSubdivision(base, exp, gapRatio, maxInstances, filterMod
     linearAcc,
     maskX,
     maskY,
-    maskZ
+    maskZ,
+    gx,
+    gy,
+    gz
   ) {
-    // Poda precoce da casca externa: se os 3 eixos já entraram no interior, nenhum filho tocará a borda
     if (isShellMode && step >= 3 && maskX === 0 && maskY === 0 && maskZ === 0) {
       return;
     }
 
     if (step === maxDepth) {
       const linearIndex = linearAcc + 1;
-      const primeFlag = isPrimeMode ? isPrime(linearIndex) : false;
-      if (isPrimeMode && !primeFlag) return;
+      if (isPrimeMode && !isPrime(linearIndex)) return;
 
-      // Bitmask de quais faces globais este bloco toca (1:+X, 2:-X, 4:+Y, 8:-Y, 16:+Z, 32:-Z)
-      let outerMask = 0;
-      if (maskX & 2) outerMask |= 1;
-      if (maskX & 1) outerMask |= 2;
-      if (maskY & 2) outerMask |= 4;
-      if (maskY & 1) outerMask |= 8;
-      if (maskZ & 2) outerMask |= 16;
-      if (maskZ & 1) outerMask |= 32;
+      ensureCapacity();
 
-      blocks.push({
-        index: linearIndex,
-        coords: Array.from(coords),
-        isPrime: isPrimeMode ? primeFlag : isPrime(linearIndex),
-        outerMask,
-        x: cx,
-        y: cy,
-        z: cz,
-        startX: parentX,
-        startY: parentY,
-        startZ: parentZ,
-        sx,
-        sy,
-        sz,
-        hue: (hue % 360) / 360
-      });
+      px[count] = cx;
+      py[count] = cy;
+      pz[count] = cz;
+      startDeltaX[count] = parentX - cx;
+      startDeltaY[count] = parentY - cy;
+      startDeltaZ[count] = parentZ - cz;
+      sxArr[count] = sx;
+      syArr[count] = sy;
+      szArr[count] = sz;
+      hueArr[count] = (hue % 360) / 360;
+      packedGrid[count] = gx + gy * 256 + gz * 65536;
+      linearIndices[count] = linearIndex;
+      count++;
       return;
     }
 
@@ -163,7 +182,6 @@ export function generateSubdivision(base, exp, gapRatio, maxInstances, filterMod
     const isPenultimate = step === maxDepth - 1;
 
     for (let i = 0; i < base; i++) {
-      // Atualiza máscaras de borda global para o eixo atual
       let nMaskX = maskX;
       let nMaskY = maskY;
       let nMaskZ = maskZ;
@@ -179,7 +197,6 @@ export function generateSubdivision(base, exp, gapRatio, maxInstances, filterMod
         }
       }
 
-      // Poda precoce da Esponja de Menger a cada tripleto (X, Y, Z) concluído
       if (isMengerMode && axis === 2) {
         let centerAxes = 0;
         if (coords[step - 2] === mengerMid) centerAxes++;
@@ -197,16 +214,22 @@ export function generateSubdivision(base, exp, gapRatio, maxInstances, filterMod
       let nsx = sx;
       let nsy = sy;
       let nsz = sz;
+      let ngx = gx;
+      let ngy = gy;
+      let ngz = gz;
 
       if (axis === 0) {
         ncx = cx + normOffset * sx;
         nsx = sx * childFrac;
+        ngx = gx * base + i;
       } else if (axis === 1) {
         ncy = cy + normOffset * sy;
         nsy = sy * childFrac;
+        ngy = gy * base + i;
       } else {
         ncz = cz + normOffset * sz;
         nsz = sz * childFrac;
+        ngz = gz * base + i;
       }
 
       coords[step] = i;
@@ -225,17 +248,63 @@ export function generateSubdivision(base, exp, gapRatio, maxInstances, filterMod
         linearAcc + i * weight,
         nMaskX,
         nMaskY,
-        nMaskZ
+        nMaskZ,
+        ngx,
+        ngy,
+        ngz
       );
     }
   }
 
-  subdivide(0, 0, 0, 0, MASTER_SIZE, MASTER_SIZE, MASTER_SIZE, 0, 0, 0, 195, 0, 3, 3, 3);
+  subdivide(0, 0, 0, 0, MASTER_SIZE, MASTER_SIZE, MASTER_SIZE, 0, 0, 0, 195, 0, 3, 3, 3, 0, 0, 0);
 
   const totalPossible = Math.pow(base, maxDepth);
 
+  // Reconstrói um único bloco sob demanda (hover/clique) sem alocar objetos para toda a malha
+  function getBlock(i) {
+    if (i < 0 || i >= count) return null;
+    const idx = linearIndices[i];
+    const blockCoords = new Array(maxDepth);
+    let rem = idx - 1;
+    for (let d = maxDepth - 1; d >= 0; d--) {
+      blockCoords[d] = rem % base;
+      rem = Math.floor(rem / base);
+    }
+    const x = px[i];
+    const y = py[i];
+    const z = pz[i];
+    return {
+      index: idx,
+      coords: blockCoords,
+      isPrime: isPrime(idx),
+      x,
+      y,
+      z,
+      startX: x + startDeltaX[i],
+      startY: y + startDeltaY[i],
+      startZ: z + startDeltaZ[i],
+      sx: sxArr[i],
+      sy: syArr[i],
+      sz: szArr[i],
+      hue: hueArr[i]
+    };
+  }
+
   return {
-    blocks,
+    count,
+    px: px.subarray(0, count),
+    py: py.subarray(0, count),
+    pz: pz.subarray(0, count),
+    startDeltaX: startDeltaX.subarray(0, count),
+    startDeltaY: startDeltaY.subarray(0, count),
+    startDeltaZ: startDeltaZ.subarray(0, count),
+    sx: sxArr.subarray(0, count),
+    sy: syArr.subarray(0, count),
+    sz: szArr.subarray(0, count),
+    hue: hueArr.subarray(0, count),
+    packedGrid: packedGrid.subarray(0, count),
+    linearIndices: linearIndices.subarray(0, count),
+    getBlock,
     totalPossible,
     renderedDepth: maxDepth,
     filterMode

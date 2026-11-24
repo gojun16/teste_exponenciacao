@@ -15,6 +15,7 @@ import { CinemaDirector } from '../cinema/cinemaDirector.js';
 import { TuningEngine } from '../audio/tuningEngine.js';
 import { SpatialAudioEngine } from '../audio/spatialAudio.js';
 import { ImageMosaic } from '../mosaic/imageMosaic.js';
+import { BadAppleDirector } from '../badapple/badAppleDirector.js';
 
 const container = document.getElementById('canvas-container');
 const engine = new PowerRenderer3D(container);
@@ -29,6 +30,7 @@ instrument.attachSpatial(spatialAudio);
 instrument.attachTuning(tuning);
 
 const mosaic = new ImageMosaic(engine);
+engine.attachMosaic(mosaic);
 mosaic.syncWithEngine();
 
 const mosaicInput = document.getElementById('mosaic-image-input');
@@ -95,6 +97,41 @@ const cinema = new CinemaDirector({
 });
 engine.attachCinema(cinema);
 
+const badApple = new BadAppleDirector(engine);
+engine.attachBadApple(badApple);
+
+const btnBadApple = document.createElement('button');
+btnBadApple.id = 'btn-bad-apple';
+btnBadApple.type = 'button';
+btnBadApple.textContent = '🍎 Bad Apple!!';
+btnCinema?.parentElement?.insertBefore(btnBadApple, btnCinema.nextSibling);
+
+badApple.onStop = () => {
+  btnBadApple.classList.remove('active');
+  btnBadApple.textContent = '🍎 Bad Apple!!';
+};
+
+btnBadApple.addEventListener('click', () => {
+  if (!badApple.active) {
+    if (cinema.active) {
+      cinema.stop(parseFloat(explodeInput.value) || 0);
+      btnCinema.classList.remove('active');
+      btnCinema.textContent = 'Modo Cinema';
+    }
+    if (player.isPlaying) {
+      player.togglePlay();
+      renderPlaylistUI();
+    }
+    physics.reset();
+    resetPhysicsUI();
+    badApple.start();
+    btnBadApple.classList.add('active');
+    btnBadApple.textContent = 'Parar Bad Apple!!';
+  } else {
+    badApple.stop();
+  }
+});
+
 function syncButtonsAfterCinema() {
   btnZCurve.classList.toggle('active', zCurve.visible);
   btnZCurve.textContent = zCurve.visible ? 'Ocultar Curva Z' : 'Curva Espacial (Z)';
@@ -143,8 +180,8 @@ const rotYWInput = document.getElementById('rot-yw-input');
 const btn4DSpin = document.getElementById('btn-4d-spin');
 
 // Libera teto maior no slider de orçamento para atingir resoluções altas na casca externa
-if (budgetInput && parseInt(budgetInput.max, 10) < 300000) {
-  budgetInput.max = '300000';
+if (budgetInput && parseInt(budgetInput.max, 10) < 1500000) {
+  budgetInput.max = '1500000';
 }
 
 const formulaEl = document.getElementById('formula');
@@ -276,7 +313,7 @@ container.addEventListener('pointerup', (e) => {
   const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
   if (moved < 6) {
     engine.updatePointer(e.clientX, e.clientY);
-    const clickedBlock = engine.raycastHover();
+    const clickedBlock = engine.raycastHover(true);
     if (clickedBlock) {
       if (physics.active && !physics.rewinding) {
         physics.applyShockwave(engine.lastHitPoint, 24);
@@ -316,7 +353,7 @@ function rebuild(playSound = false) {
   mosaic.syncWithEngine(base, effectiveExp);
   updateMosaicResolutionLabel();
 
-  instanceCountEl.textContent = `Visíveis: ${result.blocks.length.toLocaleString('pt-BR')}`;
+  instanceCountEl.textContent = `Visíveis: ${result.count.toLocaleString('pt-BR')}`;
 
   if (playSound) player.triggerDimensionChime(effectiveExp);
 }
@@ -522,7 +559,7 @@ function animate(now) {
 
   engine.camera.getWorldDirection(lookDirVec);
   spatialAudio.updateListener(engine.camera, lookDirVec);
-  instrument.update(dt, engine.blocksData);
+  instrument.update(dt, instrument.scannerActive ? engine.blocksData : []);
   engine.render(dt, player.getAudioEnergy());
 
   frames++;
