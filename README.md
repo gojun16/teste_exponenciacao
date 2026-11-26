@@ -35,3 +35,5 @@ Como o projeto utiliza módulos ES6 (`import`), inicie um servidor HTTP simples 
 ```bash
 python3 -m http.server 8000
 ```
+
+https://gojun16.github.io/teste_exponenciacao/
