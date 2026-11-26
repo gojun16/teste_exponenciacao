@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import {
   MASTER_SIZE,
   formatBigPower,
-  getDimensionText,
-  generateSubdivision
+    getDimensionText,
+    generateSubdivision
 } from './mathEngine.js';
 import { PowerRenderer3D } from './renderer3D.js';
 import { AmbientPlaylistPlayer } from '../audio/synthPlayer.js';
@@ -15,7 +15,9 @@ import { CinemaDirector } from '../cinema/cinemaDirector.js';
 import { TuningEngine } from '../audio/tuningEngine.js';
 import { SpatialAudioEngine } from '../audio/spatialAudio.js';
 import { ImageMosaic } from '../mosaic/imageMosaic.js';
-import { BadAppleDirector } from '../badapple/badAppleDirector.js';
+import { VideoPlayerDirector } from '../videoplayer/videoDirector.js';
+import { RubiksCubeDirector } from '../rubiks/rubiksCube.js';
+import { WebXRDirector } from '../vr/webxrDirector.js';
 
 const container = document.getElementById('canvas-container');
 const engine = new PowerRenderer3D(container);
@@ -97,22 +99,142 @@ const cinema = new CinemaDirector({
 });
 engine.attachCinema(cinema);
 
-const badApple = new BadAppleDirector(engine);
-engine.attachBadApple(badApple);
+const rubiksCube = new RubiksCubeDirector(engine);
+engine.attachRubiksCube(rubiksCube);
+const btnRubiks = document.getElementById('btn-rubiks');
+const controlsHintEl = document.querySelector('.controls-hint');
+const defaultControlsHintText = controlsHintEl ? controlsHintEl.textContent : '';
 
-const btnBadApple = document.createElement('button');
-btnBadApple.id = 'btn-bad-apple';
-btnBadApple.type = 'button';
-btnBadApple.textContent = '🍎 Bad Apple!!';
-btnCinema?.parentElement?.insertBefore(btnBadApple, btnCinema.nextSibling);
+let savedExpBeforeRubiks = 3;
+let savedBaseBeforeRubiks = 3;
 
-badApple.onStop = () => {
-  btnBadApple.classList.remove('active');
-  btnBadApple.textContent = '🍎 Bad Apple!!';
+function enterRubiksSection() {
+  if (rubiksCube.active) return;
+
+  if (cinema.active) {
+    cinema.stop(parseFloat(explodeInput.value) || 0);
+    btnCinema.classList.remove('active');
+    btnCinema.textContent = 'Modo Cinema';
+  }
+  if (videoPlayer.active) {
+    videoPlayer.stop();
+    btnVideoPlayer.classList.remove('active');
+    btnVideoPlayer.textContent = '🎬 Voxel Video 3D';
+  }
+  if (player.isPlaying) {
+    player.togglePlay();
+    renderPlaylistUI();
+  }
+  if (instrument.scannerActive) {
+    instrument.toggleScanner();
+    btnScanner.classList.remove('active');
+    btnScanner.textContent = 'Scanner Laser Musical';
+  }
+  physics.reset();
+  resetPhysicsUI();
+  isDiving = false;
+  btnDive.classList.remove('active');
+  btnDive.textContent = 'Mergulhar';
+
+  savedBaseBeforeRubiks = Math.max(1, parseInt(baseInput.value, 10) || 3);
+  savedExpBeforeRubiks = Math.max(0, parseInt(expInput.value, 10) || 3);
+
+  const rubiksOrder = THREE.MathUtils.clamp(savedBaseBeforeRubiks < 2 ? 3 : savedBaseBeforeRubiks, 2, 8);
+  baseInput.min = '2';
+  baseInput.max = '8';
+  baseInput.value = String(rubiksOrder);
+
+  expInput.value = '3';
+  expInput.disabled = true;
+  expInput.title = 'Expoente fixo em 3D (n³) para o Cubo Mágico';
+
+  const gapVal = parseFloat(gapInput.value) || 0.06;
+  rubiksCube.start(rubiksOrder, gapVal);
+
+  formulaEl.innerHTML = `${rubiksOrder}<sup>3</sup> = <span>${Math.pow(rubiksOrder, 3)}</span>`;
+  dimDescEl.textContent = `3D: Cubo Mágico ${rubiksOrder}×${rubiksOrder}×${rubiksOrder} (Eixos X × Y × Z)`;
+  instanceCountEl.textContent = `Cubinhos: ${Math.pow(rubiksOrder, 3)}`;
+  depthLevelEl.textContent = 'Modo: Cubo Mágico';
+
+  if (controlsHintEl) {
+    controlsHintEl.textContent = 'Arraste uma face do Cubo para girar camadas • Fundo: Orbitar • Teclas: U D L R F B';
+  }
+  if (btnRubiks) {
+    btnRubiks.classList.add('active');
+    btnRubiks.textContent = 'Sair do Cubo Mágico';
+  }
+}
+
+rubiksCube.onExit = () => {
+  baseInput.min = '1';
+  baseInput.max = '25';
+  baseInput.value = String(savedBaseBeforeRubiks);
+
+  expInput.disabled = false;
+  expInput.title = '';
+  expInput.value = String(savedExpBeforeRubiks);
+
+  depthLevelEl.textContent = `Camada: ${diveLayerCount}`;
+  if (controlsHintEl) {
+    controlsHintEl.textContent = defaultControlsHintText;
+  }
+  if (btnRubiks) {
+    btnRubiks.classList.remove('active');
+    btnRubiks.textContent = '🧩 Cubo Mágico (n³)';
+  }
+  rebuild(false);
 };
 
-btnBadApple.addEventListener('click', () => {
-  if (!badApple.active) {
+btnRubiks?.addEventListener('click', () => {
+  if (!rubiksCube.active) {
+    enterRubiksSection();
+  } else {
+    rubiksCube.stop();
+  }
+});
+
+const videoPlayer = new VideoPlayerDirector(engine);
+engine.attachVideoPlayer(videoPlayer);
+
+const webxr = new WebXRDirector(engine, {
+  player,
+  hyper4D,
+  instrument,
+  tuning,
+  spatialAudio,
+  physics,
+  zCurve,
+  mosaic,
+  cinema,
+  rubiksCube,
+  videoPlayer,
+  rebuild: (playSound) => rebuild(playSound)
+});
+engine.attachWebXR(webxr);
+
+const btnVR = document.getElementById('btn-vr');
+btnVR?.addEventListener('click', () => {
+  if (!webxr.isPresenting) {
+    webxr.enterVR();
+  } else {
+    webxr.exitVR();
+  }
+});
+
+const btnVideoPlayer = document.createElement('button');
+btnVideoPlayer.id = 'btn-video-player';
+btnVideoPlayer.type = 'button';
+btnVideoPlayer.textContent = '🎬 Voxel Video 3D';
+btnCinema?.parentElement?.insertBefore(btnVideoPlayer, btnCinema.nextSibling);
+
+videoPlayer.onStop = () => {
+  btnVideoPlayer.classList.remove('active');
+  btnVideoPlayer.textContent = '🎬 Voxel Video 3D';
+};
+
+btnVideoPlayer.addEventListener('click', () => {
+  if (!videoPlayer.active) {
+    if (rubiksCube.active) rubiksCube.stop();
     if (cinema.active) {
       cinema.stop(parseFloat(explodeInput.value) || 0);
       btnCinema.classList.remove('active');
@@ -124,11 +246,11 @@ btnBadApple.addEventListener('click', () => {
     }
     physics.reset();
     resetPhysicsUI();
-    badApple.start();
-    btnBadApple.classList.add('active');
-    btnBadApple.textContent = 'Parar Bad Apple!!';
+    videoPlayer.start();
+    btnVideoPlayer.classList.add('active');
+    btnVideoPlayer.textContent = 'Parar Voxel Video';
   } else {
-    badApple.stop();
+    videoPlayer.stop();
   }
 });
 
@@ -143,6 +265,11 @@ function syncButtonsAfterCinema() {
 
 btnCinema.addEventListener('click', () => {
   if (!cinema.active) {
+    if (videoPlayer.active) {
+      videoPlayer.stop();
+      btnVideoPlayer.classList.remove('active');
+      btnVideoPlayer.textContent = '🎬 Voxel Video 3D';
+    }
     physics.reset();
     resetPhysicsUI();
     cinema.start();
@@ -293,8 +420,8 @@ if (btnSpatial) {
     spatialAudio.enabled = !spatialAudio.enabled;
     btnSpatial.classList.toggle('active', spatialAudio.enabled);
     btnSpatial.textContent = spatialAudio.enabled
-      ? 'Áudio Espacial 3D: ON'
-      : 'Áudio Espacial 3D: OFF';
+    ? 'Áudio Espacial 3D: ON'
+    : 'Áudio Espacial 3D: OFF';
 
     if (spatialAudio.enabled) {
       spatialAudio.playSpatialNote(329.63, { x: -10, y: 1, z: 0 });
@@ -330,6 +457,25 @@ audioVolumeInput.addEventListener('input', () => {
 });
 
 function rebuild(playSound = false) {
+  if (rubiksCube.active) {
+    const order = THREE.MathUtils.clamp(parseInt(baseInput.value, 10) || 3, 2, 8);
+    if (String(order) !== baseInput.value) baseInput.value = String(order);
+    expInput.value = '3';
+    const gap = parseFloat(gapInput.value) || 0.06;
+
+    if (rubiksCube.order !== order) {
+      rubiksCube.rebuild(order, gap);
+      if (playSound) player.triggerDimensionChime(3);
+    } else {
+      rubiksCube.setGapRatio(gap);
+    }
+
+    formulaEl.innerHTML = `${order}<sup>3</sup> = <span>${Math.pow(order, 3)}</span>`;
+    dimDescEl.textContent = `3D: Cubo Mágico ${order}×${order}×${order} (Eixos X × Y × Z)`;
+    instanceCountEl.textContent = `Cubinhos: ${Math.pow(order, 3)}`;
+    return;
+  }
+
   physics.reset();
   resetPhysicsUI();
 
@@ -481,6 +627,7 @@ window.addEventListener('keydown', (e) => {
   if (document.activeElement.tagName === 'INPUT') return;
   keys[e.code] = true;
 
+  if (webxr.isPresenting || videoPlayer.active) return;
   if (e.code === 'Digit1') engine.setCameraPreset(1);
   if (e.code === 'Digit2') engine.setCameraPreset(2);
   if (e.code === 'Digit3') engine.setCameraPreset(3);
@@ -488,6 +635,8 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
 function handleKeyboardMovement(dt) {
+  if (webxr.isPresenting || rubiksCube.active) return;
+  if (videoPlayer.active && videoPlayer.cameraRig.mode !== 'free') return;
   const speed = 11 * dt;
   const forward = new THREE.Vector3();
   engine.camera.getWorldDirection(forward);
@@ -518,7 +667,6 @@ let fpsTimer = lastTime;
 const lookDirVec = new THREE.Vector3();
 
 function animate(now) {
-  requestAnimationFrame(animate);
 
   const dt = Math.min((now - lastTime) / 1000, 0.1);
   lastTime = now;
@@ -541,7 +689,7 @@ function animate(now) {
     tooltip.style.display = 'none';
   }
 
-  if (isDiving) {
+  if (isDiving && !webxr.isPresenting) {
     const base = Math.max(2, parseInt(baseInput.value, 10) || 2);
     const dir = new THREE.Vector3().subVectors(engine.controls.target, engine.camera.position).normalize();
     const dist = engine.camera.position.distanceTo(engine.controls.target);
@@ -560,6 +708,7 @@ function animate(now) {
   engine.camera.getWorldDirection(lookDirVec);
   spatialAudio.updateListener(engine.camera, lookDirVec);
   instrument.update(dt, instrument.scannerActive ? engine.blocksData : []);
+  rubiksCube.update(dt);
   engine.render(dt, player.getAudioEnergy());
 
   frames++;
@@ -572,4 +721,4 @@ function animate(now) {
 
 renderPlaylistUI();
 rebuild(false);
-requestAnimationFrame(animate);
+engine.renderer.setAnimationLoop(animate);

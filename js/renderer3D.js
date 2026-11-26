@@ -66,11 +66,11 @@ export class PowerRenderer3D {
     this.mosaic = null;
     this.cubesVisible = true;
     this.cinema = null;
-    this.badApple = null;
-    this._needsRotationReset = false;
+    this.videoPlayer = null;
+    this.rubiksCube = null;
+    this.webxr = null;
     this.lastHitPoint = null;
 
-    // Uniforms compartilhados direto com a GPU (0 bytes/frame em animação, explosão e Bad Apple 4D)
     this.gpuUniforms = {
       uAnimEase: { value: 1.0 },
       uRadialBoost: { value: 1.0 },
@@ -82,22 +82,8 @@ export class PowerRenderer3D {
       uMacroFaceCull: { value: 0.0 },
       uVisPosFaces: { value: new THREE.Vector3(1, 1, 1) },
       uVisNegFaces: { value: new THREE.Vector3(1, 1, 1) },
-      // Bad Apple 4D Interior Cube Cinema (100% GPU)
-      uBadAppleMode: { value: 0.0 },
-      uBadAppleMode: { value: 0.0 },
-      uBadAppleRoomMode: { value: 1.0 },
-      uBadApplePanU: { value: 0.0 },
-      uBadAppleTex: { value: new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat) },
-      uBadAppleMorph: { value: 0.0 },
-      uBadAppleRelief: { value: 0.6 },
-      uBadAppleWave: { value: 0.0 },
-      uBadAppleTime: { value: 0.0 },
-      uBadAppleBass: { value: 0.0 },
-      uBadAppleLead: { value: 0.0 },
-      uBadAppleAngleXW: { value: 0.0 },
-      uBadAppleAngleYW: { value: 0.0 },
-      uBadApple4DDepth: { value: 0.8 },
-      uBadAppleLumaW: { value: 0.3 }
+      uIsVR: { value: 0.0 },
+      uVRExposure: { value: 0.88 }
     };
 
     this.raycaster = new THREE.Raycaster();
@@ -156,13 +142,23 @@ export class PowerRenderer3D {
     }
   }
 
-  attachBadApple(badAppleInstance) {
-    this.badApple = badAppleInstance;
+  attachVideoPlayer(videoPlayerInstance) {
+    this.videoPlayer = videoPlayerInstance;
+  }
+
+  attachRubiksCube(rubiksInstance) {
+    this.rubiksCube = rubiksInstance;
+  }
+
+  attachWebXR(webxrInstance) {
+    this.webxr = webxrInstance;
   }
 
   setCubesVisible(visible) {
     this.cubesVisible = Boolean(visible);
-    if (this.instancedMesh) this.instancedMesh.visible = this.cubesVisible;
+    if (this.instancedMesh) {
+      this.instancedMesh.visible = this.cubesVisible && !(this.videoPlayer && this.videoPlayer.active);
+    }
     return this.cubesVisible;
   }
 
@@ -202,10 +198,10 @@ export class PowerRenderer3D {
     this.masterWireframe = new THREE.LineSegments(edges, lineMat);
     this.scene.add(this.masterWireframe);
 
-    const axesHelper = new THREE.AxesHelper(MASTER_SIZE * 0.72);
-    axesHelper.material.transparent = true;
-    axesHelper.material.opacity = 0.45;
-    this.scene.add(axesHelper);
+    this.axesHelper = new THREE.AxesHelper(MASTER_SIZE * 0.72);
+    this.axesHelper.material.transparent = true;
+    this.axesHelper.material.opacity = 0.45;
+    this.scene.add(this.axesHelper);
   }
 
   setSliceRatio(ratio) {
@@ -263,9 +259,6 @@ export class PowerRenderer3D {
           `#include <common>
           attribute float aPackedCoord;
           attribute vec3 aStartDelta;
-          attribute vec3 aBadApplePos;
-          attribute vec3 aBadAppleScale;
-          attribute vec4 aBadAppleUV;
           uniform float uAnimEase;
           uniform float uRadialBoost;
           uniform float uUseRawMatrix;
@@ -273,184 +266,104 @@ export class PowerRenderer3D {
           uniform vec3 uGridDims;
           uniform float uMosaicEnabled;
           uniform float uReliefStrength;
+          uniform float uIsVR;
+          uniform float uVRExposure;
           uniform float uMacroFaceCull;
           uniform vec3 uVisPosFaces;
           uniform vec3 uVisNegFaces;
-          uniform float uBadAppleMode;
-          uniform float uBadAppleRoomMode;
-          uniform float uBadApplePanU;
-          uniform sampler2D uBadAppleTex;
-          uniform float uBadAppleMorph;
-          uniform float uBadAppleRelief;
-          uniform float uBadAppleWave;
-          uniform float uBadAppleTime;
-          uniform float uBadAppleBass;
-          uniform float uBadAppleLead;
-          uniform float uBadAppleAngleXW;
-          uniform float uBadAppleAngleYW;
-          uniform float uBadApple4DDepth;
-          uniform float uBadAppleLumaW;
           varying vec3 vGridCoord;
           varying vec3 vLocalNormal;
-          varying vec3 vOutDir;
-          varying vec4 vBadAppleUV;
-          varying float vBadAppleLuma;`
+          varying vec3 vOutDir;`
         )
         .replace(
           '#include <project_vertex>',
-          `vBadAppleUV = aBadAppleUV;
-          vBadAppleLuma = 0.0;
-          vLocalNormal = normal;
-          vec4 mvPosition = vec4(transformed, 1.0);
+          `vLocalNormal = normal;
+          float pGz = floor(aPackedCoord / 65536.0);
+          float pRem = aPackedCoord - pGz * 65536.0;
+          float pGy = floor(pRem / 256.0);
+          float pGx = pRem - pGy * 256.0;
+          vec3 gridCoord = vec3(pGx, pGy, pGz);
 
-          if (uBadAppleMode > 0.5) {
-            vec3 restCenter = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-            vec3 restScale = vec3(instanceMatrix[0][0], instanceMatrix[1][1], instanceMatrix[2][2]);
+          vec3 maxIdx = max(vec3(0.0), uGridDims - 1.0);
+          float dx = (maxIdx.x < 0.1) ? 1.0 : ((gridCoord.x >= maxIdx.x - 0.1 ? 1.0 : 0.0) - (gridCoord.x <= 0.1 ? 1.0 : 0.0));
+          float dy = (maxIdx.y < 0.1) ? 1.0 : ((gridCoord.y >= maxIdx.y - 0.1 ? 1.0 : 0.0) - (gridCoord.y <= 0.1 ? 1.0 : 0.0));
+          float dz = (maxIdx.z < 0.1) ? 1.0 : ((gridCoord.z >= maxIdx.z - 0.1 ? 1.0 : 0.0) - (gridCoord.z <= 0.1 ? 1.0 : 0.0));
 
-            vec3 targetCenter = aBadApplePos;
-            vec3 targetScale = aBadAppleScale;
-            float wId = aBadAppleUV.z;
+          vec3 rawDir = vec3(dx, dy, dz);
+          float dirLen = length(rawDir);
+          vec3 outDir = (dirLen > 0.001) ? (rawDir / dirLen) : vec3(0.0);
 
-            // Normal apontando para o interior do cubo
-            vec3 inNormal = vec3(0.0, 0.0, 1.0);
-            if (uBadAppleRoomMode > 0.5) {
-              if (wId < 0.5) inNormal = vec3(0.0, 0.0, 1.0);
-              else if (wId < 1.5) inNormal = vec3(-1.0, 0.0, 0.0);
-              else if (wId < 2.5) inNormal = vec3(0.0, 0.0, -1.0);
-              else if (wId < 3.5) inNormal = vec3(1.0, 0.0, 0.0);
-              else if (wId < 4.5) inNormal = vec3(0.0, -1.0, 0.0);
-              else if (wId < 5.5) inNormal = vec3(0.0, 1.0, 0.0);
-              else inNormal = vec3(0.0);
-            }
-
-            if (wId < 5.5) {
-              vec2 sampleUV = vec2(aBadAppleUV.x + (uBadAppleRoomMode > 0.5 ? uBadApplePanU : 0.0), aBadAppleUV.y);
-              vec3 texCol = texture2D(uBadAppleTex, sampleUV).rgb;
-              float luma = dot(texCol, vec3(0.299, 0.587, 0.114));
-              vBadAppleLuma = luma;
-              float disp = (luma > 0.45 ? luma * uBadAppleRelief : -0.25 * (1.0 - luma));
-              if (uBadAppleWave > 0.01) {
-                disp += sin((aBadAppleUV.x + aBadAppleUV.y) * 14.0 + uBadAppleTime * 10.0) * uBadAppleWave;
-              }
-              targetCenter += inNormal * disp;
+          float pinOffset = 0.0;
+          if (uMosaicEnabled > 0.5 && abs(uReliefStrength) > 0.001 && dirLen > 0.001) {
+            vec2 vCell = vec2(0.0);
+            vec2 vFaceDims = vec2(1.0);
+            if (abs(outDir.z) >= abs(outDir.x) && abs(outDir.z) >= abs(outDir.y)) {
+              vFaceDims = vec2(uGridDims.x, uGridDims.y);
+              vCell = (outDir.z >= 0.0) ? vec2(gridCoord.x, gridCoord.y) : vec2(maxIdx.x - gridCoord.x, gridCoord.y);
+            } else if (abs(outDir.x) >= abs(outDir.y)) {
+              vFaceDims = vec2(uGridDims.z, uGridDims.y);
+              vCell = (outDir.x >= 0.0) ? vec2(maxIdx.z - gridCoord.z, gridCoord.y) : vec2(gridCoord.z, gridCoord.y);
             } else {
-              targetScale *= (1.0 + uBadAppleBass * 0.75);
+              vFaceDims = vec2(uGridDims.x, uGridDims.z);
+              vCell = (outDir.y >= 0.0) ? vec2(gridCoord.x, maxIdx.z - gridCoord.z) : vec2(gridCoord.x, gridCoord.z);
+            }
+            vec2 vUV = (vCell + 0.5) / max(vec2(1.0), vFaceDims);
+            float luma = dot(texture2D(uMosaicTex, vUV).rgb, vec3(0.299, 0.587, 0.114));
+            pinOffset = luma * uReliefStrength;
+          }
+
+          vGridCoord = gridCoord;
+          vOutDir = outDir;
+
+          vec4 localPos = vec4(transformed, 1.0);
+          vec3 instCenter = vec3(0.0);
+
+          #ifdef USE_INSTANCING
+            if (uUseRawMatrix > 0.5) {
+              localPos = instanceMatrix * localPos;
+              instCenter = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+            } else {
+              vec3 restCenter = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
+              instCenter = (restCenter + aStartDelta * (1.0 - uAnimEase)) * uRadialBoost;
+              vec3 scaledVert = vec3(
+                transformed.x * instanceMatrix[0][0],
+                transformed.y * instanceMatrix[1][1],
+                transformed.z * instanceMatrix[2][2]
+              );
+              localPos = vec4(instCenter + scaledVert, 1.0);
+            }
+          #endif
+
+          localPos.xyz += outDir * pinOffset;
+          instCenter += outDir * pinOffset;
+
+          bool culled = false;
+          #ifdef USE_INSTANCING
+            if (uMacroFaceCull > 0.5 && dirLen > 0.001) {
+              vec3 posVis = max(vec3(0.0), sign(outDir)) * uVisPosFaces;
+              vec3 negVis = max(vec3(0.0), -sign(outDir)) * uVisNegFaces;
+              if (dot(posVis + negVis, vec3(1.0)) < 0.5) {
+                culled = true;
+              }
             }
 
-            // Projeção 4D Tesseract (dobra as bordas preservando o centro legível)
-            vec3 pNorm = targetCenter / 7.0;
-            float edge = aBadAppleUV.w;
-            float wCoord = (edge * edge - 0.25) * uBadApple4DDepth + (vBadAppleLuma - 0.5) * uBadAppleLumaW;
-
-            float cxw = cos(uBadAppleAngleXW);
-            float sxw = sin(uBadAppleAngleXW);
-            float x4 = pNorm.x * cxw - wCoord * sxw;
-            float w1 = pNorm.x * sxw + wCoord * cxw;
-
-            float cyw = cos(uBadAppleAngleYW);
-            float syw = sin(uBadAppleAngleYW);
-            float y4 = pNorm.y * cyw - w1 * syw;
-            float w2 = pNorm.y * syw + w1 * cyw;
-
-            float wSafe = clamp(w2, -0.95, 0.95);
-            float persp4D = clamp(3.4 / (3.4 - wSafe), 0.78, 1.28);
-            vec3 projected4D = vec3(x4, y4, pNorm.z) * persp4D * 7.0;
-            targetScale *= persp4D;
-
-            vec3 finalCenter = mix(restCenter, projected4D, uBadAppleMorph);
-            vec3 finalScale = mix(restScale, targetScale, uBadAppleMorph);
-            vec4 localPos = vec4(finalCenter + transformed * finalScale, 1.0);
-            mvPosition = modelViewMatrix * localPos;
-            gl_Position = projectionMatrix * mvPosition;
-          } else {
-            // Modo Exponenciação 3D padrão
-            float pGz = floor(aPackedCoord / 65536.0);
-            float pRem = aPackedCoord - pGz * 65536.0;
-            float pGy = floor(pRem / 256.0);
-            float pGx = pRem - pGy * 256.0;
-            vec3 gridCoord = vec3(pGx, pGy, pGz);
-
-            vec3 maxIdx = max(vec3(0.0), uGridDims - 1.0);
-            float dx = (maxIdx.x < 0.1) ? 1.0 : ((gridCoord.x >= maxIdx.x - 0.1 ? 1.0 : 0.0) - (gridCoord.x <= 0.1 ? 1.0 : 0.0));
-            float dy = (maxIdx.y < 0.1) ? 1.0 : ((gridCoord.y >= maxIdx.y - 0.1 ? 1.0 : 0.0) - (gridCoord.y <= 0.1 ? 1.0 : 0.0));
-            float dz = (maxIdx.z < 0.1) ? 1.0 : ((gridCoord.z >= maxIdx.z - 0.1 ? 1.0 : 0.0) - (gridCoord.z <= 0.1 ? 1.0 : 0.0));
-
-            vec3 rawDir = vec3(dx, dy, dz);
-            float dirLen = length(rawDir);
-            vec3 outDir = (dirLen > 0.001) ? (rawDir / dirLen) : vec3(0.0);
-
-            float pinOffset = 0.0;
-            if (uMosaicEnabled > 0.5 && abs(uReliefStrength) > 0.001 && dirLen > 0.001) {
-              vec2 vCell = vec2(0.0);
-              vec2 vFaceDims = vec2(1.0);
-              if (abs(outDir.z) >= abs(outDir.x) && abs(outDir.z) >= abs(outDir.y)) {
-                vFaceDims = vec2(uGridDims.x, uGridDims.y);
-                vCell = (outDir.z >= 0.0) ? vec2(gridCoord.x, gridCoord.y) : vec2(maxIdx.x - gridCoord.x, gridCoord.y);
-              } else if (abs(outDir.x) >= abs(outDir.y)) {
-                vFaceDims = vec2(uGridDims.z, uGridDims.y);
-                vCell = (outDir.x >= 0.0) ? vec2(maxIdx.z - gridCoord.z, gridCoord.y) : vec2(gridCoord.z, gridCoord.y);
-              } else {
-                vFaceDims = vec2(uGridDims.x, uGridDims.z);
-                vCell = (outDir.y >= 0.0) ? vec2(gridCoord.x, maxIdx.z - gridCoord.z) : vec2(gridCoord.x, gridCoord.z);
-              }
-              vec2 vUV = (vCell + 0.5) / max(vec2(1.0), vFaceDims);
-              float luma = dot(texture2D(uMosaicTex, vUV).rgb, vec3(0.299, 0.587, 0.114));
-              pinOffset = luma * uReliefStrength;
-            }
-
-            vGridCoord = gridCoord;
-            vOutDir = outDir;
-
-            vec4 localPos = vec4(transformed, 1.0);
-            vec3 instCenter = vec3(0.0);
-
-            #ifdef USE_INSTANCING
-              if (uUseRawMatrix > 0.5) {
-                localPos = instanceMatrix * localPos;
-                instCenter = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-              } else {
-                vec3 restCenter = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
-                instCenter = (restCenter + aStartDelta * (1.0 - uAnimEase)) * uRadialBoost;
-                vec3 scaledVert = vec3(
-                  transformed.x * instanceMatrix[0][0],
-                  transformed.y * instanceMatrix[1][1],
-                  transformed.z * instanceMatrix[2][2]
-                );
-                localPos = vec4(instCenter + scaledVert, 1.0);
-              }
-            #endif
-
-            localPos.xyz += outDir * pinOffset;
-            instCenter += outDir * pinOffset;
-
-            bool culled = false;
-            #ifdef USE_INSTANCING
-              if (uMacroFaceCull > 0.5 && dirLen > 0.001) {
-                vec3 posVis = max(vec3(0.0), sign(outDir)) * uVisPosFaces;
-                vec3 negVis = max(vec3(0.0), -sign(outDir)) * uVisNegFaces;
-                if (dot(posVis + negVis, vec3(1.0)) < 0.5) {
+            if (!culled) {
+              vec4 clipCenter = projectionMatrix * modelViewMatrix * vec4(instCenter, 1.0);
+              if (clipCenter.w > 0.0) {
+                float boundPad = 11.0 + abs(uReliefStrength) * 2.2;
+                float limit = clipCenter.w + boundPad;
+                if (abs(clipCenter.x) > limit || abs(clipCenter.y) > limit || clipCenter.z < -limit || clipCenter.z > limit) {
                   culled = true;
                 }
               }
-
-              if (!culled) {
-                vec4 clipCenter = projectionMatrix * modelViewMatrix * vec4(instCenter, 1.0);
-                if (clipCenter.w > 0.0) {
-                  float boundPad = 11.0 + abs(uReliefStrength) * 2.2;
-                  float limit = clipCenter.w + boundPad;
-                  if (abs(clipCenter.x) > limit || abs(clipCenter.y) > limit || clipCenter.z < -limit || clipCenter.z > limit) {
-                    culled = true;
-                  }
-                }
-              }
-            #endif
-
-            mvPosition = modelViewMatrix * localPos;
-            if (culled) {
-              gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-            } else {
-              gl_Position = projectionMatrix * mvPosition;
             }
+          #endif
+
+          vec4 mvPosition = modelViewMatrix * localPos;
+          if (culled) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+          } else {
+            gl_Position = projectionMatrix * mvPosition;
           }`
         );
 
@@ -462,45 +375,14 @@ export class PowerRenderer3D {
           uniform vec3 uGridDims;
           uniform float uMosaicEnabled;
           uniform float uReliefStrength;
-          uniform float uBadAppleMode;
-          uniform float uBadAppleRoomMode;
-          uniform float uBadApplePanU;
-          uniform sampler2D uBadAppleTex;
-          uniform float uBadAppleBass;
-          uniform float uBadAppleLead;
           varying vec3 vGridCoord;
           varying vec3 vLocalNormal;
-          varying vec3 vOutDir;
-          varying vec4 vBadAppleUV;
-          varying float vBadAppleLuma;`
+          varying vec3 vOutDir;`
         )
         .replace(
           '#include <color_fragment>',
           `#include <color_fragment>
-          if (uBadAppleMode > 0.5) {
-            float wId = vBadAppleUV.z;
-            if (wId < 5.5) {
-              vec2 uv = vBadAppleUV.xy;
-              if (uBadAppleRoomMode > 0.5 && (uv.y < 0.125 || uv.y > 0.875)) {
-                // Moldura superior/inferior com barra equalizadora reativa
-                float barWave = 0.5 + 0.5 * sin(uv.x * 37.699);
-                float eq = step(1.0 - barWave, uBadAppleBass * 0.75 + uBadAppleLead * 0.35);
-                diffuseColor.rgb = mix(vec3(0.03, 0.04, 0.07), vec3(0.22, 0.74, 0.97), eq * 0.65);
-              } else {
-                vec2 imgUV = uBadAppleRoomMode > 0.5
-                  ? vec2(uv.x, (uv.y - 0.125) / 0.75)
-                  : uv;
-                vec3 tex = texture2D(uBadAppleTex, imgUV).rgb;
-                float luma = dot(tex, vec3(0.299, 0.587, 0.114));
-                float shade = 0.02 + luma * 0.72;
-                diffuseColor.rgb = vec3(shade, shade, shade + (1.0 - luma) * 0.025);
-              }
-            } else {
-              // Pilares 4D das quinas
-              float glow = 0.14 + uBadAppleBass * 0.65;
-              diffuseColor.rgb = vec3(glow * 0.75, glow * 0.88, glow);
-            }
-          } else if (uMosaicEnabled > 0.5) {
+          if (uMosaicEnabled > 0.5) {
             vec3 n = vLocalNormal;
             vec2 cell = vec2(0.0);
             vec2 faceDims = vec2(1.0);
@@ -557,17 +439,14 @@ export class PowerRenderer3D {
             } else {
               diffuseColor.rgb = vec3(0.08, 0.09, 0.13);
             }
-          }`
-        )
-        .replace(
-          '#include <emissivemap_fragment>',
-          `#include <emissivemap_fragment>
-          if (uBadAppleMode > 0.5) {
-            totalEmissiveRadiance += diffuseColor.rgb * 0.24;
+          }
+          if (uIsVR > 0.5) {
+            vec3 vrCol = diffuseColor.rgb * uVRExposure;
+            diffuseColor.rgb = vrCol / (1.0 + vrCol * 0.45);
           }`
         );
     };
-    mat.customProgramCacheKey = () => 'exponential-cube-ultra-gpu-v9-ba4d';
+    mat.customProgramCacheKey = () => 'exponential-cube-ultra-gpu-v11-clean';
     mat.needsUpdate = true;
   }
 
@@ -605,10 +484,6 @@ export class PowerRenderer3D {
       startDeltas[o + 2] = startDeltaZ[i];
     }
     geometry.setAttribute('aStartDelta', new THREE.InstancedBufferAttribute(startDeltas, 3));
-
-    geometry.setAttribute('aBadApplePos', new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3));
-    geometry.setAttribute('aBadAppleScale', new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3));
-    geometry.setAttribute('aBadAppleUV', new THREE.InstancedBufferAttribute(new Float32Array(count * 4), 4));
 
     const material = count > 8000
       ? new THREE.MeshLambertMaterial({
@@ -649,8 +524,15 @@ export class PowerRenderer3D {
     if (this.zCurve && this.zCurve.visible) {
       this.zCurve.rebuild(this.blocksData, 1 + this.explodeFactor, this.hyper4D, base);
     }
-    if (this.badApple && this.badApple.active) {
-      this.badApple.onMeshRebuilt();
+    if (this.rubiksCube && this.rubiksCube.active) {
+      this.rubiksCube.update(dt);
+      this.bloomPass.strength = 0.24;
+      if (!this.renderer.xr?.isPresenting) this.controls.update();
+      this._presentFrame();
+      return;
+    }
+    if (this.videoPlayer && this.videoPlayer.active) {
+      this.videoPlayer.onMeshRebuilt();
     }
     this.setCubesVisible(this.cubesVisible);
   }
@@ -726,6 +608,8 @@ export class PowerRenderer3D {
   }
 
   raycastHover(force = false) {
+    if (this.videoPlayer && this.videoPlayer.active) return null;
+    if (this.rubiksCube && this.rubiksCube.active) return null;
     if (!this.cubesVisible || !this.instancedMesh || !this.subdivisionData || this.subdivisionData.count === 0) {
       return null;
     }
@@ -780,19 +664,32 @@ export class PowerRenderer3D {
     this.controls.update();
   }
 
-  render(dt, audioEnergy = { bass: 0, mid: 0 }) {
-    if (this.badApple && this.badApple.active) {
-      this.badApple.update(dt);
-      this.bloomPass.strength = 0.03;
-      this.controls.update();
+  _presentFrame() {
+    if (this.renderer.xr && this.renderer.xr.isPresenting) {
+      this.renderer.render(this.scene, this.camera);
+    } else {
       this.composer.render();
+    }
+  }
+
+  render(dt, audioEnergy = { bass: 0, mid: 0 }) {
+    const isVR = Boolean(this.renderer.xr && this.renderer.xr.isPresenting);
+    if (isVR && this.webxr) {
+      this.webxr.update(dt, audioEnergy);
+    }
+
+    if (this.videoPlayer && this.videoPlayer.active) {
+      this.videoPlayer.update(dt);
+      this.bloomPass.strength = this.videoPlayer.bloomStrength ?? 0.36;
+      if (!isVR && this.videoPlayer.cameraRig.mode === 'free') this.controls.update();
+      this._presentFrame();
       return;
     }
     if (this.physics && this.physics.update(dt)) {
       if (this.zCurve) this.zCurve.update(dt, true);
       this._applyPhysicsTransforms();
-      this.controls.update();
-      this.composer.render();
+      if (!isVR) this.controls.update();
+      this._presentFrame();
       return;
     }
 
@@ -819,7 +716,7 @@ export class PowerRenderer3D {
     this.rootGroup.scale.lerp(this._targetScaleVec, 0.18);
     this.bloomPass.strength = this.baseBloomStrength + audioEnergy.mid * 0.35;
 
-    this.controls.update();
+    if (!isVR) this.controls.update();
 
     const canMacroCull =
       this.currentFilterMode === 'shell' &&
@@ -847,7 +744,7 @@ export class PowerRenderer3D {
       );
     }
 
-    this.composer.render();
+    this._presentFrame();
   }
 
   _onResize() {

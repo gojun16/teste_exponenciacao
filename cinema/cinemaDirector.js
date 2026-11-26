@@ -492,7 +492,7 @@ export class CinemaDirector {
   }
 
   start() {
-    if (this.active) return;
+    if (this.active || this.engine?.videoPlayer?.active) return;
     this.active = true;
     this.paused = false;
     this.isTransitioning = false;
@@ -1046,8 +1046,12 @@ export class CinemaDirector {
       }
     }
 
-    // 3. Câmera Orbital Cinematográfica
-    if (this.userDragging) {
+    const inVR = Boolean(this.engine?.webxr?.isPresenting);
+
+    // 3. Câmera Orbital Cinematográfica (desativada em VR para respeitar a cabeça do usuário)
+    if (inVR) {
+      // No WebXR, o usuário controla livremente a câmera pela cabeça e mãos
+    } else if (this.userDragging) {
       this.dragResumeTimer = 1.6;
     } else if (this.dragResumeTimer > 0) {
       this.dragResumeTimer -= dt;
@@ -1081,8 +1085,10 @@ export class CinemaDirector {
       }
     }
 
-    // 4. Atualiza posição 2D do Pop-up e da Linha Guia rastreando o ponto 3D
-    this._updateFloatingPopup(dt, false);
+    // 4. Atualiza posição 2D do Pop-up e da Linha Guia rastreando o ponto 3D (somente desktop)
+    if (!inVR) {
+      this._updateFloatingPopup(dt, false);
+    }
 
     if (this.paused || this.isTransitioning) return;
 

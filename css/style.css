@@ -327,3 +327,194 @@ button.violet.active {
   border-radius: 8px;
   padding: 5px 8px;
 }
+
+/* Voxel Video Player 3D: modo de exibição limpa, sem HUD matemática, raycast ou tooltips. */
+body.voxel-player-cinematic .hud,
+body.voxel-player-cinematic .audio-hud,
+body.voxel-player-cinematic .controls-hint,
+body.voxel-player-cinematic #inspector-tooltip,
+body.voxel-player-cinematic #cinema-banner {
+  display: none !important;
+}
+body.voxel-player-cinematic #canvas-container {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+}
+body.voxel-player-cinematic.voxel-player-ui-visible #voxel-player-hud {
+  display: flex !important;
+}
+body.voxel-player-cinematic #voxel-player-hud {
+  display: none !important;
+}
+
+/* O canvas passa a ocupar toda a viewport no modo de exibição cinematográfica. */
+body.voxel-player-cinematic {
+  cursor: none;
+}
+body.voxel-player-cinematic.voxel-player-ui-visible {
+  cursor: default;
+}
+body.voxel-player-cinematic #canvas-container canvas {
+  display: block;
+}
+
+/* ==========================================================================
+   Seção V2: Cubo Mágico (n³) — Limita a HUD aos controles originais de
+   exponenciação + interação, embaralhamento e auto-resolução do cubo.
+   ========================================================================== */
+.rubiks-panel {
+  display: none;
+  flex-direction: column;
+  gap: 9px;
+}
+
+body.rubiks-mode .rubiks-panel {
+  display: flex;
+}
+
+/* Oculta módulos extras da HUD esquerda e o painel de áudio direito */
+body.rubiks-mode .audio-hud,
+body.rubiks-mode #inspector-tooltip,
+body.rubiks-mode #mirror-banner,
+body.rubiks-mode #cinema-banner,
+body.rubiks-mode .hud .control-group,
+body.rubiks-mode .hud .control-row,
+body.rubiks-mode .hud > .select-row,
+body.rubiks-mode .hud > .btn-group,
+body.rubiks-mode .hud .sliders .slider-row:not(:first-child) {
+  display: none !important;
+}
+
+.rubiks-status-card {
+  background: rgba(2, 6, 23, 0.88);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  border-radius: 10px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rubiks-status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.rb-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+
+.rb-badge.solved {
+  background: rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #6ee7b7;
+}
+
+.rb-badge.scrambled {
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fde68a;
+}
+
+.rb-badge.scrambling,
+.rb-badge.solving {
+  background: rgba(56, 189, 248, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #bae6fd;
+}
+
+.rb-timer {
+  font-family: 'Consolas', monospace;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.rubiks-metrics {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.74rem;
+  color: #94a3b8;
+}
+
+.rubiks-metrics strong {
+  color: #f8fafc;
+}
+
+.rb-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.rb-progress-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.71rem;
+  font-family: 'Consolas', monospace;
+  color: #6ee7b7;
+}
+
+.rb-progress-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.95);
+  overflow: hidden;
+  border: 1px solid rgba(52, 211, 153, 0.25);
+}
+
+.rb-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #10b981, #38bdf8);
+  transition: width 0.1s linear;
+}
+
+.rubiks-quick-moves {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.rb-sub-label {
+  font-size: 0.7rem;
+  color: #94a3b8;
+}
+
+.rb-notation-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+
+.rb-notation-grid button {
+  padding: 5px 2px;
+  font-family: 'Consolas', monospace;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+/* ==========================================================================
+   Modo VR Imersivo (WebXR / Meta Quest 2) — Oculta overlays 2D de desktop
+   ========================================================================== */
+body.vr-mode-active .hud,
+body.vr-mode-active .audio-hud,
+body.vr-mode-active .controls-hint,
+body.vr-mode-active #inspector-tooltip,
+body.vr-mode-active #cinema-top-controls,
+body.vr-mode-active #cinema-curiosity-card,
+body.vr-mode-active #cinema-tether-svg,
+body.vr-mode-active #cinema-vignette,
+body.vr-mode-active #voxel-player-hud {
+  display: none !important;
+}
