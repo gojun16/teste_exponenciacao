@@ -593,19 +593,29 @@ export class DiegeticControls3D {
   }
 
   updatePlacement(handStates, dt) {
-    if (!this.visible) return;
+    if (!this.visible || this.pinned) return;
 
-    const leftHand = handStates.find((h) => h.handedness === 'left' && h.active) || handStates[0];
+    // O painel fica flutuando ao lado do campo de visão, nunca preso ao pulso.
+    // Isso mantém as duas mãos livres para manipular o objeto principal.
+    const cameraPos = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    const cameraQuat = new THREE.Quaternion();
 
-    if (!this.pinned && leftHand && leftHand.active) {
-      // Ancora suavemente acima e à direita do pulso esquerdo, voltado para o rosto do usuário
-      const targetPos = leftHand.wristPos.clone().add(new THREE.Vector3(0.08, 0.22, -0.04));
-      this.rootGroup.position.lerp(targetPos, 1 - Math.exp(-9 * dt));
-      this.rootGroup.lookAt(this.camera.position);
-    } else if (this.pinned && this.rootGroup.position.lengthSq() < 0.001) {
-      this.rootGroup.position.set(-0.38, 1.25, -0.78);
-      this.rootGroup.lookAt(this.camera.position);
-    }
+    this.camera.getWorldPosition(cameraPos);
+    this.camera.getWorldDirection(forward).normalize();
+    this.camera.getWorldQuaternion(cameraQuat);
+    right.set(1, 0, 0).applyQuaternion(cameraQuat).normalize();
+    up.set(0, 1, 0).applyQuaternion(cameraQuat).normalize();
+
+    const targetPos = cameraPos
+      .addScaledVector(forward, 0.92)
+      .addScaledVector(right, -0.38)
+      .addScaledVector(up, -0.18);
+
+    this.rootGroup.position.lerp(targetPos, 1 - Math.exp(-7 * dt));
+    this.rootGroup.lookAt(cameraPos);
   }
 
   updateInteraction(handStates, dt) {
@@ -630,7 +640,8 @@ export class DiegeticControls3D {
       const v = 0.5 - localTip.y / this.panelH;
 
       if (inFront && u >= -0.05 && u <= 1.05 && v >= -0.05 && v <= 1.05) {
-        interacted = true;
+        // Hover apenas destaca o widget; não captura a mão nem bloqueia o grab do cubo.
+        // O painel só consome a interação quando há toque efetivo em um controle.
 
         // Testa botões
         for (const btn of this.buttons) {
@@ -638,6 +649,7 @@ export class DiegeticControls3D {
             btn.hover = true;
             needsRedraw = true;
             if (localTip.z <= 0.014 && this._buttonCooldown <= 0) {
+              interacted = true;
               this._buttonCooldown = 0.28;
               btn.onClick?.();
             }
@@ -650,6 +662,7 @@ export class DiegeticControls3D {
             sl.hover = true;
             needsRedraw = true;
             if (localTip.z <= 0.022 || h.isPinching) {
+              interacted = true;
               const norm = THREE.MathUtils.clamp((u - sl.nx) / sl.nw, 0, 1);
               const val = sl.min + norm * (sl.max - sl.min);
               sl.setter(val);

@@ -23,8 +23,8 @@ export class WebXRDirector {
 
     // Palco holográfico escalável em VR (1.3m flutuando na frente do usuário)
     this.vrStageGroup = new THREE.Group();
-    this.vrStageGroup.position.set(0, 1.32, -1.25);
-    this.vrStageGroup.scale.setScalar(0.13);
+    this.vrStageGroup.position.set(0, 1.05, -1.65);
+    this.vrStageGroup.scale.setScalar(0.075);
     this.engine.scene.add(this.vrStageGroup);
 
     this.worldEnv = new VRWorldEnvironment(this.engine.scene);
@@ -75,10 +75,11 @@ export class WebXRDirector {
     if (camDir.lengthSq() < 0.001) camDir.set(0, 0, -1);
     camDir.normalize();
 
-    this.vrStageGroup.position.copy(camPos).addScaledVector(camDir, 1.15);
-    this.vrStageGroup.position.y = Math.max(0.85, camPos.y - 0.15);
+    this.vrStageGroup.position.copy(camPos).addScaledVector(camDir, 1.55);
+    // Mantém o cubo à frente e um pouco abaixo da linha dos olhos, fora do volume do jogador.
+    this.vrStageGroup.position.y = Math.max(0.65, camPos.y - 0.45);
     this.vrStageGroup.quaternion.identity();
-    this.vrStageGroup.scale.setScalar(0.13);
+    this.vrStageGroup.scale.setScalar(0.075);
 
     if (this.deps.videoPlayer?.active && this.deps.videoPlayer.voxelMesh) {
       this.deps.videoPlayer.voxelMesh.position.set(0, 1.42, -2.35);
@@ -472,9 +473,9 @@ export class WebXRDirector {
 
       // Move os artefatos matemáticos para o palco holográfico escalável em VR
       this._attachGroupsToVRStage();
-      this.vrStageGroup.position.set(0, 1.32, -1.25);
+      this.vrStageGroup.position.set(0, 1.05, -1.65);
       this.vrStageGroup.rotation.set(0, 0, 0);
-      this.vrStageGroup.scale.setScalar(0.13);
+      this.vrStageGroup.scale.setScalar(0.075);
 
       // Ativa ambiente 360° e console diegético 3D
       this.engine.scene.background = new THREE.Color(0x030612);

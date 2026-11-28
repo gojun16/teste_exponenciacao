@@ -336,7 +336,9 @@ export class HandTrackingEngine {
     // Verifica se a pinça começou perto do estágio (ou já estava agarrando)
     const stageCenter = this._tmpVecA;
     stageGroup.getWorldPosition(stageCenter);
-    const grabRadius = Math.max(0.65, stageGroup.scale.x * 9.5);
+    // Alcance amplo o suficiente para agarrar a superfície do cubo, sem capturar
+    // pinças feitas longe do objeto.
+    const grabRadius = Math.max(0.42, stageGroup.scale.x * 9.0);
 
     const near0 = p0 && h0.pinchMid.distanceTo(stageCenter) <= grabRadius;
     const near1 = p1 && h1.pinchMid.distanceTo(stageCenter) <= grabRadius;
@@ -390,9 +392,9 @@ export class HandTrackingEngine {
         const posDelta = this._tmpVecB.subVectors(h.pinchMid, this.grabState.initialHandPos);
         stageGroup.position.copy(this.grabState.initialTargetPos).add(posDelta);
 
-        // Rotação relativa suave do pulso
-        this._tmpQuat.copy(this.grabState.initialHandQuat).invert().premultiply(h.wristQuat);
-        stageGroup.quaternion.copy(this._tmpQuat).multiply(this.grabState.initialTargetQuat);
+        // Com uma mão, o gesto funciona como arrastar: desloca o cubo sem
+        // fazê-lo girar involuntariamente conforme a orientação do pulso.
+        // Rotação e escala ficam reservadas para a manipulação com duas mãos.
       }
       return;
     }
