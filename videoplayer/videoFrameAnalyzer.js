@@ -24,6 +24,9 @@ export class VideoFrameAnalyzer {
     this.texture.needsUpdate = true;
 
     this._prevLuma = new Float32Array(count);
+    // Track chroma too: equal-luminance color cuts are still meaningful visual events.
+    this._prevColor = new Uint8Array(count * 3);
+    this._hasPrevColor = false;
     this._saliency = new Float32Array(count);
     this._chamfer = new Float32Array(count);
     this._accumulator = 0;
@@ -42,6 +45,8 @@ export class VideoFrameAnalyzer {
       litRatio: 0.25,
       domeExposure: 1.0,
       flashDelta: 0,
+      visualChange: 0,
+      colorChange: 0,
       colorfulness: 0.5,
       dominantColor: new THREE.Color(0.22, 0.72, 0.96),
       secondaryColor: new THREE.Color(0.55, 0.28, 0.92),
@@ -66,6 +71,8 @@ export class VideoFrameAnalyzer {
 
   reset() {
     this._prevLuma.fill(0);
+    this._prevColor.fill(0);
+    this._hasPrevColor = false;
     this._saliency.fill(0);
     this._chamfer.fill(0);
     this._accumulator = 0;
@@ -82,6 +89,8 @@ export class VideoFrameAnalyzer {
     this.telemetry.litRatio = 0.25;
     this.telemetry.domeExposure = 1.0;
     this.telemetry.flashDelta = 0;
+    this.telemetry.visualChange = 0;
+    this.telemetry.colorChange = 0;
     this.telemetry.colorfulness = 0.5;
     this.telemetry.dominantHueIndex = 0;
     this.telemetry.dominantHueAngle = 0;
@@ -197,12 +206,21 @@ export class VideoFrameAnalyzer {
       secB += (b * 0.7 + g * 0.3) * secW;
       secWeight += secW;
 
-      const diff = Math.abs(luma - this._prevLuma[p]);
-      motionGrid[p] = Math.min(1, diff * 3.6);
-      if (diff > 0.12) changedPixels++;
+      const diff = this._hasPrevColor ? Math.abs(luma - this._prevLuma[p]) : 0;
+      const prevK = p * 3;
+      const colorDiff = this._hasPrevColor
+        ? (Math.abs(pixels[i] - this._prevColor[prevK]) + Math.abs(pixels[i + 1] - this._prevColor[prevK + 1]) + Math.abs(pixels[i + 2] - this._prevColor[prevK + 2])) / (3 * 255)
+        : 0;
+      const combinedChange = diff * 0.58 + colorDiff * 0.42;
+      motionGrid[p] = Math.min(1, combinedChange * 3.6);
+      if (combinedChange > 0.12) changedPixels++;
       this._prevLuma[p] = luma;
+      this._prevColor[prevK] = pixels[i];
+      this._prevColor[prevK + 1] = pixels[i + 1];
+      this._prevColor[prevK + 2] = pixels[i + 2];
     }
 
+    this._hasPrevColor = true;
     const avgLuma = sumLuma / total;
     const litRatio = litPixels / total;
     const avgSat = sumSat / total;
@@ -350,6 +368,9 @@ export class VideoFrameAnalyzer {
     }
 
     const rawMotion = Math.min(1, (changedPixels / total) * 5.2);
+    const rawVisualChange = Math.min(1, changedPixels / total * 3.6);
+    this.telemetry.visualChange += (rawVisualChange - this.telemetry.visualChange) * 0.48;
+    this.telemetry.colorChange += (rawVisualChange - this.telemetry.colorChange) * 0.34;
     this.telemetry.motionEnergy += (rawMotion - this.telemetry.motionEnergy) * 0.42;
 
     // 4) Chamfer 3-4 Distance Transform for volumetric 2.5D prism inflation

@@ -1,19 +1,10 @@
 import * as THREE from 'three';
 
-const INTENTS = ['pushIn', 'pullOut', 'arc', 'lateralTrack', 'craneReveal', 'reveal', 'hold'];
+const INTENTS = ['pushIn', 'pullOut', 'arc', 'lateralTrack', 'craneReveal', 'reveal', 'trackFocus', 'hold'];
 
-/** A small stateful decision layer: cinematic verbs, not camera pose presets. */
+/** Content-led director. Decisions react to video events and audio accents, not a preset loop. */
 export class CinematicDirectorBrain {
-  constructor() {
-    this.intent = 'reveal';
-    this.previousIntent = '';
-    this.elapsed = 0;
-    this.duration = 0;
-    this.cycle = 0;
-    this.reason = 'composição inicial';
-    this.scores = {};
-    this.recentIntents = [];
-  }
+  constructor() { this.reset(); }
 
   reset() {
     this.intent = 'reveal';
@@ -24,13 +15,25 @@ export class CinematicDirectorBrain {
     this.reason = 'composição inicial';
     this.scores = {};
     this.recentIntents = [];
+    this.eventCooldown = 0;
+    this._lastMotion = 0;
+    this._lastFlash = 0;
+    this._lastBeat = 0;
+    this._lastFocusX = 0;
+    this._lastFocusY = 0;
+    this.eventStrength = 0;
+    this.eventType = 'none';
   }
 
   update(dt, telemetry = {}, energy = {}, composition = {}, timeSec = 0) {
-    this.elapsed += Math.max(0, dt);
+    dt = Math.max(0, dt);
+    this.elapsed += dt;
+    this.eventCooldown = Math.max(0, this.eventCooldown - dt);
     const motion = THREE.MathUtils.clamp(telemetry.motionEnergy ?? 0, 0, 1);
     const beat = THREE.MathUtils.clamp(energy.beatPulse ?? 0, 0, 1);
     const bass = THREE.MathUtils.clamp(energy.bass ?? 0, 0, 1);
+    const mid = THREE.MathUtils.clamp(energy.mid ?? 0, 0, 1);
+    const high = THREE.MathUtils.clamp(energy.high ?? 0, 0, 1);
     const scale = THREE.MathUtils.clamp(telemetry.subjectScale ?? 0.5, 0, 1);
     const spread = THREE.MathUtils.clamp((telemetry.depthSpread ?? 0) * 2.4, 0, 1);
     const coverage = THREE.MathUtils.clamp(telemetry.depthCoverage ?? 0, 0, 1);
@@ -38,52 +41,72 @@ export class CinematicDirectorBrain {
     const colorStrength = THREE.MathUtils.clamp(telemetry.dominantHueStrength ?? 0, 0, 1);
     const colorConfidence = colorRatio * colorStrength;
     const flash = THREE.MathUtils.clamp(telemetry.flashDelta ?? 0, 0, 1);
+    const visualChange = THREE.MathUtils.clamp(telemetry.visualChange ?? 0, 0, 1);
     const lateralMotion = Math.abs(telemetry.velocityX ?? 0);
-    const calm = 1 - THREE.MathUtils.clamp(motion * 0.7 + bass * 0.3, 0, 1);
+    const focusShift = Math.hypot((telemetry.focusX ?? 0) - this._lastFocusX, (telemetry.focusY ?? 0) - this._lastFocusY);
+    const motionChange = Math.abs(motion - this._lastMotion);
+    const flashRise = Math.max(0, flash - this._lastFlash);
+    const beatRise = Math.max(0, beat - this._lastBeat);
+    const visualEvent = THREE.MathUtils.clamp(flashRise * 1.2 + motionChange * 0.55 + focusShift * 0.55 + visualChange * 0.48, 0, 1);
+    const audioEvent = THREE.MathUtils.clamp(beatRise * 1.5 + beat * 0.45 + bass * 0.18, 0, 1);
+    this.eventStrength = Math.max(visualEvent, audioEvent);
+    this.eventType = visualEvent > audioEvent ? 'visual' : audioEvent > 0.35 ? 'audio' : 'none';
+
+    const calm = 1 - THREE.MathUtils.clamp(motion * 0.72 + bass * 0.28, 0, 1);
     const compConfidence = composition.confidence ?? 0.5;
     const crowding = composition.crowding ?? scale;
+    const focusConfidence = THREE.MathUtils.clamp(0.25 + scale * 0.35 + motion * 0.25 + focusShift * 0.4, 0, 1);
 
     this.scores = {
-      pushIn: 0.16 + motion * 0.25 + beat * 0.25 + bass * 0.22 + scale * 0.12 + flash * 0.06,
-      pullOut: 0.18 + calm * 0.28 + coverage * 0.22 + (1 - scale) * 0.14 + crowding * 0.1,
-      arc: 0.18 + spread * 0.27 + colorConfidence * 0.2 + compConfidence * 0.15 + (1 - lateralMotion) * 0.08,
-      lateralTrack: 0.16 + lateralMotion * 0.42 + motion * 0.24 + Math.abs(telemetry.focusX ?? 0) * 0.1,
-      craneReveal: 0.16 + coverage * 0.34 + spread * 0.22 + flash * 0.12 + colorConfidence * 0.1,
-      reveal: 0.22 + flash * 0.25 + spread * 0.2 + beat * 0.12 + (1 - compConfidence) * 0.12,
-      hold: 0.12 + calm * 0.45 + (1 - colorStrength) * 0.08 + (1 - motion) * 0.12
+      pushIn: 0.10 + motion * 0.24 + beat * 0.28 + bass * 0.20 + high * 0.08 + scale * 0.10 + visualEvent * 0.18,
+      pullOut: 0.12 + calm * 0.22 + coverage * 0.18 + (1 - scale) * 0.18 + crowding * 0.12 + (1 - compConfidence) * 0.08,
+      arc: 0.10 + spread * 0.22 + colorConfidence * 0.14 + compConfidence * 0.14 + (1 - lateralMotion) * 0.08 + high * 0.10,
+      lateralTrack: 0.10 + lateralMotion * 0.36 + motion * 0.24 + Math.abs(telemetry.focusX ?? 0) * 0.12 + focusShift * 0.22,
+      craneReveal: 0.10 + coverage * 0.30 + spread * 0.20 + visualEvent * 0.16 + colorConfidence * 0.08,
+      reveal: 0.12 + visualEvent * 0.34 + spread * 0.16 + beat * 0.12 + (1 - compConfidence) * 0.12,
+      trackFocus: 0.08 + focusConfidence * 0.32 + motion * 0.20 + focusShift * 0.32 + lateralMotion * 0.12,
+      hold: 0.10 + calm * 0.38 + (1 - colorStrength) * 0.08 + (1 - motion) * 0.10
     };
 
-    if (this.elapsed >= this.duration) {
-      // Diversity memory prevents the director from settling into a calm-only loop.
-      // It still follows contextual scores; recent verbs receive a diminishing penalty.
+    // A take can end either naturally or when a meaningful audio/video event arrives.
+    const minHold = 5.6;
+    const eventCut = this.elapsed >= minHold && this.eventCooldown <= 0 && (visualEvent > 0.72 || (beat > 0.90 && beatRise > 0.48));
+    if (this.elapsed >= this.duration || eventCut) {
       for (let i = 0; i < this.recentIntents.length; i++) {
-        const recent = this.recentIntents[i];
-        const penalty = i === 0 ? 0.52 : i === 1 ? 0.36 : 0.24;
-        this.scores[recent] *= penalty;
+        const penalty = i === 0 ? 0.46 : i === 1 ? 0.62 : 0.78;
+        this.scores[this.recentIntents[i]] *= penalty;
       }
-      if (this.intent && !this.recentIntents.includes(this.intent)) this.scores[this.intent] *= 0.62;
-      // Hold is a deliberate pause, not the default escape from every low-energy moment.
-      if (this.recentIntents.slice(0, 2).includes('hold')) this.scores.hold = Math.min(this.scores.hold, 0.34);
-      for (const intent of INTENTS) this.scores[intent] += (Math.sin(timeSec * 0.11 + this.cycle * 1.77 + intent.length) + 1) * 0.018;
+      if (this.intent) this.scores[this.intent] *= 0.55;
+      if (this.recentIntents.slice(0, 2).includes('hold')) this.scores.hold = Math.min(this.scores.hold, 0.28);
+      // Tiny deterministic tie-breaker only; no random/cyclic shot pattern.
+      for (const key of INTENTS) this.scores[key] += ((key.length * 0.013 + this.cycle * 0.007) % 0.021);
       const next = INTENTS.reduce((best, key) => this.scores[key] > this.scores[best] ? key : best, INTENTS[0]);
       this.previousIntent = this.intent;
-      this.recentIntents.unshift(this.intent);
+      if (this.intent) this.recentIntents.unshift(this.intent);
       this.recentIntents = this.recentIntents.filter(Boolean).slice(0, 3);
       this.intent = next;
       this.elapsed = 0;
-      this.duration = 9.5 + (Math.sin(timeSec * 0.13 + this.cycle * 1.9) + 1) * 0.5 * 5.0;
-      this.cycle++;
+      this.duration = eventCut ? 6.6 + (1 - this.eventStrength) * 1.6 : 7.2 + calm * 2.8 + motion * 1.2;
+      this.duration = THREE.MathUtils.clamp(this.duration, 6.4, 10.8);
+      this.eventCooldown = eventCut ? 2.8 : 1.5;
       const why = {
-        pushIn: 'energia e movimento aumentam a intensidade',
-        pullOut: 'composição pede respiro e escala',
-        arc: 'relevo e cor favorecem parallax',
-        lateralTrack: 'movimento lateral conduz o acompanhamento',
-        craneReveal: 'profundidade pede revelação espacial',
-        reveal: 'mudança visual pede descoberta gradual',
-        hold: 'cena calma pede estabilidade'
+        pushIn: 'movimento e acento musical pedem aproximação',
+        pullOut: 'a composição pede escala e respiro',
+        arc: 'profundidade e cor favorecem revelar perspectiva',
+        lateralTrack: 'o movimento visual pede acompanhamento lateral',
+        craneReveal: 'a distribuição de profundidade pede elevação',
+        reveal: visualEvent > 0.4 ? 'evento visual detectado; revelar a mudança' : 'recompor para revelar o conteúdo',
+        trackFocus: 'saliencia mudou; acompanhar o ponto de interesse',
+        hold: 'o conteúdo pede estabilidade e contemplação'
       };
-      this.reason = why[next] || 'composição adaptativa';
+      this.reason = eventCut ? `${this.eventType === 'visual' ? 'evento visual' : 'acento musical'} · ${why[next]}` : why[next];
+      this.cycle++;
     }
+    this._lastMotion = motion;
+    this._lastFlash = flash;
+    this._lastBeat = beat;
+    this._lastFocusX = telemetry.focusX ?? 0;
+    this._lastFocusY = telemetry.focusY ?? 0;
     return this;
   }
 }

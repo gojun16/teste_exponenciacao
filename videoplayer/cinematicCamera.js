@@ -70,6 +70,12 @@ export class CinematicCameraRig {
     this._desiredPos = new THREE.Vector3();
     this._desiredTarget = new THREE.Vector3();
     this._lastBeatTrigger = 0;
+    this._autoBeatTrigger = 0;
+    this._liveFocus = new THREE.Vector3();
+    this._liveFocusVel = new THREE.Vector3();
+    this._focusTrackingOffset = new THREE.Vector3();
+    this._lastAutoFocusX = 0;
+    this._lastAutoFocusY = 0;
   }
 
   reset(stageCenter = new THREE.Vector3(0, 0, -4.5)) {
@@ -90,6 +96,12 @@ export class CinematicCameraRig {
     this.trajectoryGenerator = new CinematicTrajectoryGenerator();
     this._plannedIntent = '';
     this._trajectorySample = null;
+    this._autoBeatTrigger = 0;
+    this._liveFocus.set(0, 0, 0);
+    this._liveFocusVel.set(0, 0, 0);
+    this._focusTrackingOffset.set(0, 0, 0);
+    this._lastAutoFocusX = 0;
+    this._lastAutoFocusY = 0;
     this.activeShot = this.mode === 'auto' ? 'procedural' : this.mode;
   }
 
@@ -131,7 +143,7 @@ export class CinematicCameraRig {
       pushIn: 'Dolly-In · aproximação', pullOut: 'Dolly-Out · expansão',
       arc: 'Arco cinematográfico', lateralTrack: 'Travelling lateral',
       craneReveal: 'Crane · revelação vertical', reveal: 'Revelação em arco',
-      hold: 'Plano contemplativo'
+      hold: 'Plano contemplativo', trackFocus: 'Acompanhamento de foco visual'
     };
     return labels[intent] || 'Movimento procedural';
   }
@@ -187,7 +199,7 @@ export class CinematicCameraRig {
           telemetry,
           energy
         });
-        this.trajectoryGenerator.duration = Math.max(9.5, this.directorBrain.duration);
+        this.trajectoryGenerator.duration = THREE.MathUtils.clamp(this.directorBrain.duration, 6.4, 10.8);
         this._plannedIntent = this.directorBrain.intent;
       }
       this._trajectorySample = this.trajectoryGenerator.sample(timeSec);
@@ -236,12 +248,44 @@ export class CinematicCameraRig {
       const sample = this._trajectorySample || this.trajectoryGenerator.sample(timeSec);
       this._desiredPos.copy(sample.position);
       this._desiredTarget.copy(sample.target);
-      // Continuously refine composition with live saliency, but keep it restrained during a planned move.
-      this._desiredTarget.x += composition.focus.x * 0.16 + composition.frameBias.x * 1.6;
-      this._desiredTarget.y += composition.focus.y * 0.16 + composition.frameBias.y * 1.2;
-      desiredFov = THREE.MathUtils.clamp(sample.fov + energyMix * 1.2 + (telemetry.motionEnergy ?? 0) * 0.8, 32, 58);
-      desiredRoll = THREE.MathUtils.clamp(sample.roll + (telemetry.velocityX ?? 0) * 0.008, -0.035, 0.035);
-      omegaPos = 2.35 + (telemetry.motionEnergy ?? 0) * 0.35 + energyMix * 0.18;
+
+      // LIVE MP4 SUBJECT TRACKING: update the point of interest every frame, not only
+      // when a 6-10 second trajectory is planned. Saliency centroid is the analyzer's
+      // best available subject estimate; color location contributes only when reliable.
+      const cx = THREE.MathUtils.clamp(telemetry.centroidX ?? 0.5, 0, 1);
+      const cy = THREE.MathUtils.clamp(telemetry.centroidY ?? 0.5, 0, 1);
+      const liveX = (cx - 0.5) * 8.4 + (telemetry.colorFocusX ?? 0) * colorProminence * 1.25;
+      const liveY = (0.5 - cy) * 5.4 + (telemetry.colorFocusY ?? 0) * colorProminence * 0.9;
+      const liveConfidence = THREE.MathUtils.clamp(0.28 + (telemetry.motionEnergy ?? 0) * 0.34 + (telemetry.subjectScale ?? 0.5) * 0.28 + (telemetry.depthCoverage ?? 0) * 0.1, 0.28, 0.95);
+      this._liveFocus.set(stageCenter.x + liveX, stageCenter.y + liveY, stageCenter.z);
+      const trackingGain = this.trajectoryGenerator.trackWeight ?? 0.62;
+      this._desiredTarget.lerp(this._liveFocus, liveConfidence * trackingGain);
+      // Keep the camera path moving relative to the newly tracked subject. This is
+      // the missing follow behavior: both camera and look target respond to content.
+      this._focusTrackingOffset.set(liveX - composition.focus.x, liveY - composition.focus.y, 0).multiplyScalar(trackingGain * 0.34);
+      this._desiredPos.add(this._focusTrackingOffset);
+      this._desiredTarget.x += composition.frameBias.x * 1.15;
+      this._desiredTarget.y += composition.frameBias.y * 0.85;
+
+      // Audio affects camera action, not just a decorative zoom: transient accents
+      // create a restrained forward impulse; sustained energy changes push distance.
+      const beatPulse = THREE.MathUtils.clamp(energy.beatPulse ?? 0, 0, 1);
+      if (beatPulse > 0.86 && timeSec - this._autoBeatTrigger > 0.62) {
+        this._autoBeatTrigger = timeSec;
+        const accent = (beatPulse - 0.72) * 1.35;
+        this.camVel.z -= accent * (0.65 + (energy.bass ?? 0) * 0.55);
+        this.camVel.x += (telemetry.velocityX ?? 0) * accent * 0.12;
+      }
+      const actionEnergy = THREE.MathUtils.clamp(energyMix * 0.68 + (telemetry.motionEnergy ?? 0) * 0.32, 0, 1);
+      const focusChange = Math.hypot((telemetry.focusX ?? 0) - this._lastAutoFocusX, (telemetry.focusY ?? 0) - this._lastAutoFocusY);
+      this._lastAutoFocusX = telemetry.focusX ?? 0;
+      this._lastAutoFocusY = telemetry.focusY ?? 0;
+      const visualAccent = THREE.MathUtils.clamp((telemetry.flashDelta ?? 0) * 0.28 + (telemetry.visualChange ?? 0) * 0.48 + focusChange * 1.2, 0, 1);
+      const push = actionEnergy * 1.45 + beatPulse * 0.7 + visualAccent * 0.35;
+      this._desiredPos.z -= push * 0.7;
+      desiredFov = THREE.MathUtils.clamp(sample.fov - actionEnergy * 2.2 + beatPulse * 1.6 + visualAccent * 1.0, 29, 58);
+      desiredRoll = THREE.MathUtils.clamp(sample.roll + (telemetry.velocityX ?? 0) * 0.018 * (0.35 + actionEnergy) + beatPulse * 0.012, -0.055, 0.055);
+      omegaPos = 3.1 + (telemetry.motionEnergy ?? 0) * 0.7 + energyMix * 0.5 + focusChange * 0.25;
     } else if (shot === 'idle') {
       // Idle: stable editing/parameter-adjustment framing with only a very slow ambient drift.
       // Keep the video relief readable; suppress focus chasing, beat impulses and dramatic camera motion.
@@ -380,7 +424,7 @@ export class CinematicCameraRig {
     }
 
     stepCriticalSpringVec3(this.camPos, this.camVel, this._desiredPos, omegaPos, dt);
-    stepCriticalSpringVec3(this.targetPos, this.targetVel, this._desiredTarget, 4.4, dt);
+    stepCriticalSpringVec3(this.targetPos, this.targetVel, this._desiredTarget, shot === 'procedural' ? 5.2 : 4.4, dt);
     stepCriticalSpringScalar(this.fovSpring, desiredFov, 3.6, dt);
     stepCriticalSpringScalar(this.rollSpring, desiredRoll, 4.0, dt);
 
