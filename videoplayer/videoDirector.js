@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { VideoAudioEngine, AUDIO_PRESETS } from './videoAudioEngine.js';
 import { VideoFrameAnalyzer } from './videoFrameAnalyzer.js';
 import { CinematicCameraRig, CAMERA_MODES } from './cinematicCamera.js';
+import { CinematicEnvironment } from './cinematicEnvironment.js';
 
 export class VideoPlayerDirector {
   constructor(engine) {
@@ -1139,6 +1140,7 @@ export class VideoPlayerDirector {
     this.stageGroup = new THREE.Group();
     this.stageGroup.visible = false;
     scene.add(this.stageGroup);
+    this.cinematicEnvironment = new CinematicEnvironment(this.stageGroup);
 
     // 1) Living Panoramic Sky Dome (360-degree reactive shader driven by live video texture & motion)
     const domeGeo = new THREE.SphereGeometry(68, 48, 32);
@@ -1575,6 +1577,8 @@ export class VideoPlayerDirector {
       this.engine.controls
     );
     }
+
+    this.cinematicEnvironment?.update(dt, timeSec, tel, energy, this.cameraRig.mode === 'idle', this.voxelMesh?.position);
 
     if (this.shotEl) {
       this.shotEl.textContent = `${this.cameraRig.getCurrentShotLabel()} · ${this.cameraRig.mode === 'idle' ? 'controles liberados para ajustes' : (this.cameraRig._decisionReason || 'direção automática')}`;

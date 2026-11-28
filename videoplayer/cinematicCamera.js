@@ -1,4 +1,7 @@
 import * as THREE from 'three';
+import { CinematicCompositionSolver } from './cinematicComposition.js';
+import { CinematicDirectorBrain } from './cinematicDirectorBrain.js';
+import { CinematicTrajectoryGenerator } from './cinematicTrajectory.js';
 
 export const CAMERA_MODES = [
   { id: 'auto', label: '🎥 Auto-Diretor Cinematográfico' },
@@ -48,12 +51,12 @@ export class CinematicCameraRig {
     // Auto mode is now continuous/procedural: it solves camera parameters each frame.
     this._decisionReason = 'direção procedural inicializada';
     this._reasonTimer = 0;
-    this._proceduralPhase = 0;
     this._moveIntent = 'reveal';
-    this._moveElapsed = 0;
-    this._moveDuration = 0;
-    this._moveCycle = 0;
-    this._lastMoveIntent = '';
+    this.compositionSolver = new CinematicCompositionSolver();
+    this.directorBrain = new CinematicDirectorBrain();
+    this.trajectoryGenerator = new CinematicTrajectoryGenerator();
+    this._plannedIntent = '';
+    this._trajectorySample = null;
 
     // Critically damped spring states
     this.camPos = new THREE.Vector3(0, 0.4, 12.2);
@@ -80,13 +83,13 @@ export class CinematicCameraRig {
     this.rollSpring.vel = 0;
     this.shotTimer = 0;
     this._reasonTimer = 0;
-    this._proceduralPhase = 0;
     this._moveIntent = 'reveal';
-    this._moveElapsed = 0;
-    this._moveDuration = 0;
-    this._moveCycle = 0;
-    this._lastMoveIntent = '';
     this._decisionReason = 'direção procedural inicializada';
+    this.compositionSolver = new CinematicCompositionSolver();
+    this.directorBrain.reset();
+    this.trajectoryGenerator = new CinematicTrajectoryGenerator();
+    this._plannedIntent = '';
+    this._trajectorySample = null;
     this.activeShot = this.mode === 'auto' ? 'procedural' : this.mode;
   }
 
@@ -96,8 +99,9 @@ export class CinematicCameraRig {
       this.activeShot = modeId;
     }
     if (modeId === 'auto') {
-      this._moveElapsed = 0;
-      this._moveDuration = 0;
+      this.directorBrain.reset();
+      this._plannedIntent = '';
+      this._trajectorySample = null;
     }
     this.shotTimer = 0;
   }
@@ -132,40 +136,6 @@ export class CinematicCameraRig {
     return labels[intent] || 'Movimento procedural';
   }
 
-  _chooseMove(energy, telemetry, depthSpread, morph, timeSec) {
-    const motion = THREE.MathUtils.clamp(telemetry.motionEnergy ?? 0, 0, 1);
-    const beat = THREE.MathUtils.clamp(energy.beatPulse ?? 0, 0, 1);
-    const bass = THREE.MathUtils.clamp(energy.bass ?? 0, 0, 1);
-    const scale = THREE.MathUtils.clamp(telemetry.subjectScale ?? 0.5, 0, 1);
-    const hueArea = THREE.MathUtils.clamp(telemetry.dominantHueRatio ?? 0, 0, 1);
-    const hueStrength = THREE.MathUtils.clamp(telemetry.dominantHueStrength ?? 0, 0, 1);
-    const colorFocus = Math.hypot(telemetry.colorFocusX ?? 0, telemetry.colorFocusY ?? 0);
-    const coverage = THREE.MathUtils.clamp(telemetry.depthCoverage ?? 0, 0, 1);
-    const flash = THREE.MathUtils.clamp(telemetry.flashDelta ?? 0, 0, 1);
-    const horizontal = Math.abs(telemetry.velocityX ?? 0);
-    const calm = 1 - THREE.MathUtils.clamp(motion * 0.7 + bass * 0.3, 0, 1);
-    const scores = {
-      pushIn: 0.24 + motion * 0.35 + beat * 0.30 + bass * 0.22 + scale * 0.08,
-      pullOut: 0.25 + calm * 0.38 + coverage * 0.22 + (1 - scale) * 0.14,
-      arc: 0.26 + depthSpread * 0.28 + hueArea * hueStrength * 0.28 + colorFocus * 0.18,
-      lateralTrack: 0.22 + horizontal * 0.48 + motion * 0.24 + Math.abs(telemetry.focusX ?? 0) * 0.12,
-      craneReveal: 0.22 + coverage * 0.42 + morph * 0.25 + flash * 0.16,
-      reveal: 0.28 + flash * 0.38 + depthSpread * 0.22 + beat * 0.12,
-      hold: 0.18 + calm * 0.55 + (1 - hueStrength) * 0.08
-    };
-    // Avoid repeating the same move. Deterministic micro-variation breaks ties without random jitter.
-    if (this._lastMoveIntent) scores[this._lastMoveIntent] *= 0.42;
-    for (const key of Object.keys(scores)) scores[key] += (Math.sin(timeSec * 0.17 + this._moveCycle * 2.31 + key.length) + 1) * 0.025;
-    const selected = Object.keys(scores).sort((a, b) => scores[b] - scores[a])[0];
-    this._lastMoveIntent = this._moveIntent;
-    this._moveIntent = selected;
-    this._moveCycle++;
-    this._moveElapsed = 0;
-    // Shot duration is deliberately long enough for a movement to read as intentional.
-    this._moveDuration = 10.5 + ((Math.sin(timeSec * 0.19 + this._moveCycle) + 1) * 0.5) * 8.0;
-    this._proceduralPhase = timeSec * 0.13 + this._moveCycle * 0.71;
-    return selected;
-  }
 
 
   update(dt, timeSec, stageCenter, energy, telemetry, stageMode = 'sculpt', camera, controls) {
@@ -188,36 +158,41 @@ export class CinematicCameraRig {
     );
 
     // Beat-triggered physical spring impulse
-    if (this.mode !== 'idle' && energy.beatPulse > 0.58 && timeSec - this._lastBeatTrigger > 0.42) {
+    if (this.mode !== 'idle' && this.mode !== 'auto' && energy.beatPulse > 0.58 && timeSec - this._lastBeatTrigger > 0.42) {
       this._lastBeatTrigger = timeSec;
       const impulse = (energy.beatPulse - 0.5) * 4.5 * sculptWeight;
       this.camVel.z -= impulse;
       this.rollSpring.vel += (Math.sin(timeSec * 3.7) >= 0 ? 1 : -1) * impulse * 0.04;
     }
 
-    // Auto Director: no shot presets. Recompute a continuous camera solution from
-    // composition, depth, color, motion and audio cues every frame.
+    // Auto director stack: composition solver -> cinematic intent brain -> fresh trajectory.
+    // Intents are verbs, not stored camera positions. The path is generated from the live camera,
+    // stage center, current focus/color/depth cues, and musical context at every shot transition.
+    const composition = this.compositionSolver.update(telemetry, dt);
     if (this.mode === 'auto') {
       this.activeShot = 'procedural';
       this.shotTimer += dt;
-      this._moveElapsed += dt;
-      this._reasonTimer += dt;
-      if (this._moveElapsed >= this._moveDuration) {
-        this._chooseMove(energy, telemetry, depthSpread, morph, timeSec);
+      this.directorBrain.update(dt, telemetry, energy, composition, timeSec);
+      this._moveIntent = this.directorBrain.intent;
+      if (!this._trajectorySample || this._plannedIntent !== this.directorBrain.intent || this.directorBrain.elapsed < dt * 1.1) {
+        this.trajectoryGenerator.plan({
+          intent: this.directorBrain.intent,
+          timeSec,
+          cameraPosition: this.camPos,
+          lookTarget: this.targetPos,
+          cameraFov: camera?.fov ?? this.fovSpring.pos,
+          cameraRoll: this.rollSpring.pos,
+          stageCenter,
+          composition,
+          telemetry,
+          energy
+        });
+        this.trajectoryGenerator.duration = Math.max(9.5, this.directorBrain.duration);
+        this._plannedIntent = this.directorBrain.intent;
       }
-      if (this._reasonTimer >= 1.6) {
-        const cues = {
-          pushIn: 'movimento/energia pedem aproximação',
-          pullOut: 'respiração visual e expansão do quadro',
-          arc: 'massa cromática e relevo pedem arco',
-          lateralTrack: 'deslocamento lateral conduz o travelling',
-          craneReveal: 'profundidade pede revelação vertical',
-          reveal: 'mudança visual pede nova perspectiva',
-          hold: 'baixa energia pede contemplação'
-        };
-        this._decisionReason = `${cues[this._moveIntent] || 'composição adaptativa'} · ${Math.max(0, this._moveDuration - this._moveElapsed).toFixed(0)}s`;
-        this._reasonTimer = 0;
-      }
+      this._trajectorySample = this.trajectoryGenerator.sample(timeSec);
+      this._decisionReason = `${this.directorBrain.reason} · ${this.trajectoryGenerator.phase} · ${Math.max(0, this.directorBrain.duration - this.directorBrain.elapsed).toFixed(0)}s`;
+      this._reasonTimer = 0;
     } else {
       this.activeShot = this.mode;
       this.shotTimer = 0;
@@ -258,116 +233,15 @@ export class CinematicCameraRig {
     let omegaPos = 3.2;
 
     if (shot === 'procedural') {
-      // Intent-based cinematography: a single dominant move is selected for a shot,
-      // then its trajectory is synthesized continuously. No fixed camera poses.
-      const p = THREE.MathUtils.clamp(this._moveElapsed / Math.max(1, this._moveDuration), 0, 1);
-      const eased = p * p * (3 - 2 * p);
-      const motionX = THREE.MathUtils.clamp(telemetry.velocityX ?? 0, -1, 1);
-      const motionY = THREE.MathUtils.clamp(telemetry.velocityY ?? 0, -1, 1);
-      const motionEnergy = THREE.MathUtils.clamp(telemetry.motionEnergy ?? 0, 0, 1);
-      const colorX = THREE.MathUtils.clamp(telemetry.colorFocusX ?? 0, -1, 1);
-      const colorY = THREE.MathUtils.clamp(telemetry.colorFocusY ?? 0, -1, 1);
-      const colorArea = THREE.MathUtils.clamp((telemetry.dominantHueRatio ?? 0) * 2.0, 0, 0.72);
-      const colorStrength = THREE.MathUtils.clamp(telemetry.dominantHueStrength ?? 0, 0, 1);
-      const colorConfidence = colorArea * colorStrength;
-      const spread = depthSpread;
-      const scale = THREE.MathUtils.clamp(telemetry.subjectScale ?? 0.5, 0.18, 1);
-      const beat = energy.beatPulse ?? 0;
-      const phase = this._proceduralPhase;
-      const ambient = timeSec * 0.09 + phase;
-      const targetX = focusOffsetX * 0.48 + colorX * colorConfidence * 3.2;
-      const targetY = focusOffsetY * 0.48 + colorY * colorConfidence * 2.1;
-      this._desiredTarget.set(stageCenter.x + targetX, stageCenter.y + targetY, stageCenter.z);
-
-      let radius = 12.5;
-      let azimuth = 0.0;
-      let elevation = 0.22;
-      let lateral = 0.0;
-      let vertical = 0.0;
-      let lookLift = 0.0;
-      let lens = 42.0;
-      let roll = 0.0;
-      let moveRate = 1.0;
-
-      // Each trajectory has one primary cinematic verb. Signals modulate its scale,
-      // but don't stack unrelated moves (e.g. orbit + zoom + crane + shake).
-      switch (this._moveIntent) {
-        case 'pushIn':
-          radius = THREE.MathUtils.lerp(16.2, 8.1, eased) - beat * 0.45;
-          azimuth = -0.22 + eased * 0.42 + Math.sin(ambient) * 0.09;
-          elevation = 0.16 + Math.sin(ambient * 0.72) * 0.08 + spread * 0.10;
-          lens = THREE.MathUtils.lerp(43, 35, eased) + beat * 1.6;
-          lookLift = -0.25 * eased;
-          moveRate = 1.15;
-          break;
-        case 'pullOut':
-          radius = THREE.MathUtils.lerp(8.6, 16.3, eased);
-          azimuth = 0.30 + eased * 0.32 + Math.sin(ambient * 0.7) * 0.06;
-          elevation = 0.23 + eased * 0.16 + Math.sin(ambient) * 0.06;
-          lens = THREE.MathUtils.lerp(35, 48, eased);
-          lookLift = 0.55 * eased;
-          moveRate = 0.95;
-          break;
-        case 'arc':
-          radius = 11.8 - spread * 1.4 - morph * 0.6 + Math.sin(ambient) * 0.35;
-          azimuth = THREE.MathUtils.lerp(-1.05, 1.05, eased) + motionX * 0.10;
-          elevation = 0.24 + Math.sin(eased * Math.PI) * 0.24 + colorY * colorConfidence * 0.12;
-          lens = 39 + spread * 4.0 + beat * 1.4;
-          roll = Math.sin(eased * Math.PI) * 0.035;
-          moveRate = 1.0;
-          break;
-        case 'lateralTrack':
-          lateral = THREE.MathUtils.lerp(-6.8, 6.8, eased) + motionX * 1.25;
-          radius = 10.8 - motionEnergy * 1.1;
-          azimuth = -0.16 + Math.sin(ambient) * 0.06;
-          elevation = 0.17 + motionY * 0.08 + spread * 0.12;
-          lens = 40 + motionEnergy * 5;
-          moveRate = 1.08;
-          break;
-        case 'craneReveal':
-          vertical = THREE.MathUtils.lerp(-2.8, 7.6 + spread * 2.0, eased);
-          radius = THREE.MathUtils.lerp(13.8, 10.6, eased);
-          azimuth = -0.35 + eased * 0.58;
-          elevation = 0.10 + eased * 0.28;
-          lens = THREE.MathUtils.lerp(47, 39, eased);
-          lookLift = eased * 0.65;
-          moveRate = 1.05;
-          break;
-        case 'reveal':
-          radius = THREE.MathUtils.lerp(15.1, 11.2, eased) + Math.sin(ambient) * 0.3;
-          azimuth = THREE.MathUtils.lerp(-1.18, 0.82, eased);
-          elevation = THREE.MathUtils.lerp(0.06, 0.62, eased) + motionY * 0.06;
-          lens = THREE.MathUtils.lerp(48, 39, eased) + colorConfidence * 2.0;
-          lookLift = 0.8 * eased;
-          moveRate = 1.0;
-          break;
-        case 'hold':
-        default:
-          radius = 12.4 + Math.sin(ambient * 0.6) * 0.45 - energyMix * 0.55;
-          azimuth = 0.18 + Math.sin(ambient * 0.75) * 0.12;
-          elevation = 0.24 + Math.sin(ambient * 0.6) * 0.05;
-          lateral = Math.sin(ambient) * 0.5;
-          lens = 42 + Math.sin(ambient * 0.55) * 1.2;
-          moveRate = 0.7;
-          break;
-      }
-
-      // Composition offset is constrained so a tiny color accent cannot pull the frame.
-      const compositionX = THREE.MathUtils.clamp(targetX * 0.18, -1.25, 1.25);
-      const compositionY = THREE.MathUtils.clamp(targetY * 0.16, -0.85, 0.85);
-      const cosElev = Math.cos(elevation);
-      const sinElev = Math.sin(elevation);
-      const orbitX = Math.sin(azimuth) * cosElev * radius;
-      const orbitY = sinElev * radius;
-      const orbitZ = Math.cos(azimuth) * cosElev * radius;
-      this._desiredPos.set(
-        stageCenter.x + lateral + orbitX - compositionX,
-        stageCenter.y + vertical + orbitY + lookLift - compositionY,
-        stageCenter.z + orbitZ - morphDistance * (0.22 + spread * 0.20)
-      );
-      desiredFov = THREE.MathUtils.clamp(lens + energyMix * 2.8 + beat * 1.2, 30, 60);
-      desiredRoll = THREE.MathUtils.clamp(roll + motionX * 0.018 + colorX * colorConfidence * 0.012, -0.055, 0.055);
-      omegaPos = (2.15 + motionEnergy * 0.75 + energyMix * 0.35) * moveRate;
+      const sample = this._trajectorySample || this.trajectoryGenerator.sample(timeSec);
+      this._desiredPos.copy(sample.position);
+      this._desiredTarget.copy(sample.target);
+      // Continuously refine composition with live saliency, but keep it restrained during a planned move.
+      this._desiredTarget.x += composition.focus.x * 0.16 + composition.frameBias.x * 1.6;
+      this._desiredTarget.y += composition.focus.y * 0.16 + composition.frameBias.y * 1.2;
+      desiredFov = THREE.MathUtils.clamp(sample.fov + energyMix * 1.2 + (telemetry.motionEnergy ?? 0) * 0.8, 32, 58);
+      desiredRoll = THREE.MathUtils.clamp(sample.roll + (telemetry.velocityX ?? 0) * 0.008, -0.035, 0.035);
+      omegaPos = 2.35 + (telemetry.motionEnergy ?? 0) * 0.35 + energyMix * 0.18;
     } else if (shot === 'idle') {
       // Idle: stable editing/parameter-adjustment framing with only a very slow ambient drift.
       // Keep the video relief readable; suppress focus chasing, beat impulses and dramatic camera motion.
