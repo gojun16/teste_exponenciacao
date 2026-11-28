@@ -44,7 +44,19 @@ export class VideoFrameAnalyzer {
       flashDelta: 0,
       colorfulness: 0.5,
       dominantColor: new THREE.Color(0.22, 0.72, 0.96),
-      secondaryColor: new THREE.Color(0.55, 0.28, 0.92)
+      secondaryColor: new THREE.Color(0.55, 0.28, 0.92),
+      // Color-composition telemetry: area share, hue family and spatial location.
+      dominantHueIndex: 0,
+      dominantHueAngle: 0,
+      dominantHueRatio: 0,
+      dominantHueStrength: 0,
+      colorFocusX: 0,
+      colorFocusY: 0,
+      colorClusterSpread: 0,
+      colorContrast: 0,
+      depthMorph: 0,
+      depthCoverage: 0,
+      depthSpread: 0
     };
 
     this._lastCentroidX = 0.5;
@@ -70,6 +82,18 @@ export class VideoFrameAnalyzer {
     this.telemetry.litRatio = 0.25;
     this.telemetry.domeExposure = 1.0;
     this.telemetry.flashDelta = 0;
+    this.telemetry.colorfulness = 0.5;
+    this.telemetry.dominantHueIndex = 0;
+    this.telemetry.dominantHueAngle = 0;
+    this.telemetry.dominantHueRatio = 0;
+    this.telemetry.dominantHueStrength = 0;
+    this.telemetry.colorFocusX = 0;
+    this.telemetry.colorFocusY = 0;
+    this.telemetry.colorClusterSpread = 0;
+    this.telemetry.colorContrast = 0;
+    this.telemetry.depthMorph = 0;
+    this.telemetry.depthCoverage = 0;
+    this.telemetry.depthSpread = 0;
   }
 
   update(sourceCanvas, dt) {
@@ -121,6 +145,12 @@ export class VideoFrameAnalyzer {
 
     let domR = 0, domG = 0, domB = 0, domWeight = 0;
     let secR = 0, secG = 0, secB = 0, secWeight = 0;
+    const hueBins = new Float32Array(8);
+    const hueWeightBins = new Float32Array(8);
+    const hueX = new Float32Array(8);
+    const hueY = new Float32Array(8);
+    const hueX2 = new Float32Array(8);
+    const hueY2 = new Float32Array(8);
 
     for (let p = 0; p < total; p++) {
       const i = p * 4;
@@ -140,6 +170,22 @@ export class VideoFrameAnalyzer {
 
       // Accumulate dominant & secondary colors weighted by saturation + mid-high brightness
       const cWeight = (0.15 + sat * 1.6) * (0.25 + luma * 0.85);
+      // Bucket saturated pixels into 8 perceptual hue families. Pixel area and
+      // chroma weight are tracked separately so a tiny vivid accent won't dominate.
+      if (sat > 0.16 && maxC - minC > 0.012) {
+        let hue = 0;
+        if (maxC === r) hue = ((g - b) / (maxC - minC) + (g < b ? 6 : 0)) / 6;
+        else if (maxC === g) hue = ((b - r) / (maxC - minC) + 2) / 6;
+        else hue = ((r - g) / (maxC - minC) + 4) / 6;
+        hue = (hue + 1) % 1;
+        const bin = Math.min(7, Math.floor(hue * 8));
+        const hueW = sat * (0.25 + luma * 0.75);
+        const px = p % w, py = Math.floor(p / w);
+        hueBins[bin] += 1;
+        hueWeightBins[bin] += hueW;
+        hueX[bin] += px * hueW; hueY[bin] += py * hueW;
+        hueX2[bin] += px * px * hueW; hueY2[bin] += py * py * hueW;
+      }
       domR += r * cWeight;
       domG += g * cWeight;
       domB += b * cWeight;
@@ -160,6 +206,36 @@ export class VideoFrameAnalyzer {
     const avgLuma = sumLuma / total;
     const litRatio = litPixels / total;
     const avgSat = sumSat / total;
+    let dominantHue = 0;
+    for (let b = 1; b < 8; b++) if (hueWeightBins[b] > hueWeightBins[dominantHue]) dominantHue = b;
+    const hueTotal = hueBins.reduce((a, v) => a + v, 0);
+    const hueRatio = hueTotal > 0 ? hueBins[dominantHue] / total : 0;
+    const hueStrength = hueWeightBins[dominantHue] / Math.max(1, hueTotal);
+    const hueW = hueWeightBins[dominantHue];
+    if (hueW > 0.001) {
+      const hcx = hueX[dominantHue] / hueW / Math.max(1, w - 1);
+      const hcy = hueY[dominantHue] / hueW / Math.max(1, h - 1);
+      const variance = ((hueX2[dominantHue] / hueW - (hueX[dominantHue] / hueW) ** 2) / (w * w)
+        + (hueY2[dominantHue] / hueW - (hueY[dominantHue] / hueW) ** 2) / (h * h)) * 0.5;
+      this.telemetry.dominantHueIndex = dominantHue;
+      this.telemetry.dominantHueAngle = dominantHue * 45 + 22.5;
+      this.telemetry.dominantHueRatio += (hueRatio - this.telemetry.dominantHueRatio) * 0.25;
+      this.telemetry.dominantHueStrength += (hueStrength - this.telemetry.dominantHueStrength) * 0.25;
+      this.telemetry.colorFocusX += ((hcx - 0.5) * 2 - this.telemetry.colorFocusX) * 0.3;
+      this.telemetry.colorFocusY += ((0.5 - hcy) * 2 - this.telemetry.colorFocusY) * 0.3;
+      this.telemetry.colorClusterSpread += (Math.sqrt(Math.max(0, variance)) - this.telemetry.colorClusterSpread) * 0.25;
+    } else {
+      this.telemetry.dominantHueRatio *= 0.85;
+      this.telemetry.dominantHueStrength *= 0.85;
+      this.telemetry.colorFocusX *= 0.85;
+      this.telemetry.colorFocusY *= 0.85;
+      this.telemetry.colorClusterSpread *= 0.85;
+    }
+    const sortedHueWeights = Array.from(hueWeightBins).sort((a, b) => b - a);
+    const colorContrastTarget = sortedHueWeights.length > 1 && hueW > 0
+      ? THREE.MathUtils.clamp((sortedHueWeights[0] - sortedHueWeights[1]) / (sortedHueWeights[0] + sortedHueWeights[1] + 0.001), 0, 1)
+      : 0;
+    this.telemetry.colorContrast += (colorContrastTarget - this.telemetry.colorContrast) * 0.22;
     const flashDelta = Math.abs(avgLuma - this._lastAvgLuma);
     this._lastAvgLuma = avgLuma;
 
@@ -310,17 +386,25 @@ export class VideoFrameAnalyzer {
       }
     }
 
-    // 5) Write RGBA analysis DataTexture
+    // 5) Write RGBA analysis DataTexture and derive screen morphology for the director.
     const out = this.data;
+    let depthSum = 0, depthSq = 0, depthCount = 0, saliencySum = 0, salientCount = 0;
     for (let i = 0; i < total; i++) {
       const k = i * 4;
       const sal = this._saliency[i];
       const depthNorm = sal > 0.14 ? Math.min(1, dist[i] / 11.0) * sal : 0;
+      depthSum += depthNorm; depthSq += depthNorm * depthNorm; depthCount++;
+      saliencySum += sal; if (sal > 0.34) salientCount++;
       out[k] = Math.round(lumaGrid[i] * 255);
       out[k + 1] = Math.round(sal * 255);
       out[k + 2] = Math.round(depthNorm * 255);
       out[k + 3] = Math.round(motionGrid[i] * 255);
     }
+    const meanDepth = depthSum / Math.max(1, depthCount);
+    this.telemetry.depthMorph += (meanDepth - this.telemetry.depthMorph) * 0.28;
+    this.telemetry.depthCoverage += (salientCount / Math.max(1, depthCount) - this.telemetry.depthCoverage) * 0.28;
+    const variance = Math.max(0, depthSq / Math.max(1, depthCount) - meanDepth * meanDepth);
+    this.telemetry.depthSpread += (Math.sqrt(variance) - this.telemetry.depthSpread) * 0.28;
     this.texture.needsUpdate = true;
   }
 }

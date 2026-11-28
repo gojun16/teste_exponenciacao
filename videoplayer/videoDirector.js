@@ -339,6 +339,16 @@ export class VideoPlayerDirector {
       </div>
     `;
 
+    hud.style.opacity = '1';
+    hud.style.transition = 'opacity 260ms ease, translate 260ms ease';
+    hud.style.translate = '0 0';
+    const idleStyle = document.createElement('style');
+    idleStyle.id = 'voxel-player-idle-style';
+    idleStyle.textContent = `
+      #voxel-player-hud.voxel-player-hud-idle { opacity: 0 !important; translate: 0 12px !important; pointer-events: none !important; }
+      #voxel-player-hud { will-change: opacity, translate; }
+    `;
+    if (!document.getElementById(idleStyle.id)) document.head.appendChild(idleStyle);
     document.body.appendChild(hud);
 
     // Drag & Drop overlay
@@ -384,6 +394,41 @@ export class VideoPlayerDirector {
     this.muteBtnEl = document.getElementById('vp-mute-btn');
     this.volInputEl = document.getElementById('vp-vol-input');
     this.stopBtnEl = document.getElementById('vp-stop-btn');
+
+    // Cinematic HUD auto-hide: fade UI and cursor after inactivity.
+    this._idleHideDelay = 2400;
+    this._idleHideTimer = null;
+    this._hudInteracting = false;
+    this._idlePointerTarget = this.engine.renderer?.domElement || null;
+    this._showHUDForActivity = () => {
+      if (!this.active || !this._uiVisible) return;
+      this.hudEl?.classList.remove('voxel-player-hud-idle');
+      if (this._idlePointerTarget) this._idlePointerTarget.style.cursor = '';
+      clearTimeout(this._idleHideTimer);
+      this._idleHideTimer = setTimeout(() => {
+        if (!this.active || !this._uiVisible || this._hudInteracting) return;
+        this.hudEl?.classList.add('voxel-player-hud-idle');
+        if (this._idlePointerTarget) this._idlePointerTarget.style.cursor = 'none';
+      }, this._idleHideDelay);
+    };
+    this._idlePointerMoveHandler = () => this._showHUDForActivity();
+    this._idlePointerDownHandler = (e) => {
+      if (this.hudEl?.contains(e.target)) this._hudInteracting = true;
+      this._showHUDForActivity();
+    };
+    this._idlePointerUpHandler = () => {
+      this._hudInteracting = false;
+      this._showHUDForActivity();
+    };
+    this._idleFocusHandler = () => {
+      this._hudInteracting = false;
+      this._showHUDForActivity();
+    };
+    document.addEventListener('mousemove', this._idlePointerMoveHandler, { passive: true });
+    document.addEventListener('pointerdown', this._idlePointerDownHandler, { passive: true });
+    document.addEventListener('pointerup', this._idlePointerUpHandler, { passive: true });
+    this.hudEl?.addEventListener('focusout', this._idleFocusHandler);
+    this._showHUDForActivity();
 
     // Base & Exponent resolution controls
     document.getElementById('vp-base-dec')?.addEventListener('click', () => {
@@ -487,7 +532,12 @@ export class VideoPlayerDirector {
         e.preventDefault();
         this._uiVisible = !this._uiVisible;
         document.body.classList.toggle('voxel-player-ui-visible', this._uiVisible);
-        if (this.hudEl) this.hudEl.style.display = this._uiVisible ? 'flex' : 'none';
+        if (this.hudEl) {
+          this.hudEl.style.display = this._uiVisible ? 'flex' : 'none';
+          this.hudEl.classList.remove('voxel-player-hud-idle');
+        }
+        if (this._idlePointerTarget) this._idlePointerTarget.style.cursor = '';
+        if (this._uiVisible) this._showHUDForActivity();
       } else if (e.code === 'Escape') {
         e.preventDefault();
         this.stop();
@@ -682,12 +732,23 @@ export class VideoPlayerDirector {
 
     this._updateResolutionHUD();
 
-    if (this.hudEl) this.hudEl.style.display = 'flex';
+    if (this.hudEl) {
+      this.hudEl.style.display = 'flex';
+      this.hudEl.classList.remove('voxel-player-hud-idle');
+    }
+    this._showHUDForActivity?.();
   }
 
   stop() {
     if (!this.active) return;
     this.active = false;
+    clearTimeout(this._idleHideTimer);
+    document.removeEventListener('mousemove', this._idlePointerMoveHandler);
+    document.removeEventListener('pointerdown', this._idlePointerDownHandler);
+    document.removeEventListener('pointerup', this._idlePointerUpHandler);
+    this.hudEl?.removeEventListener('focusout', this._idleFocusHandler);
+    this.hudEl?.classList.remove('voxel-player-hud-idle');
+    if (this._idlePointerTarget) this._idlePointerTarget.style.cursor = '';
     if (this.stageGroup) this.stageGroup.visible = false;
     document.body.classList.remove('voxel-player-cinematic', 'voxel-player-ui-visible');
 
@@ -1188,6 +1249,9 @@ export class VideoPlayerDirector {
     // 3) 3D Voxel InstancedMesh (driven by Base ^ Exponent + 720 orbital cubes)
     this._buildVoxelMesh();
 
+    // 4) Portal frame around the main video: aligned to the voxel screen, never floating independently.
+    this._buildPortalFrame();
+
     // 4) Color-Reactive Geometric Torus Rings
     this.stageRings = [];
     const ringSpecs = [
@@ -1234,6 +1298,52 @@ export class VideoPlayerDirector {
     this.stageGrid.material.transparent = true;
     this.stageGrid.material.opacity = 0.24;
     this.stageGroup.add(this.stageGrid);
+  }
+
+  _buildPortalFrame() {
+    this.portalFrame = new THREE.Group();
+    this.portalFrame.position.set(0, 0, -0.42);
+    const width = 11.45;
+    const height = 8.65;
+    const rail = 0.13;
+    const frameMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8, metalness: 0.72, roughness: 0.24,
+      emissive: 0x123b68, emissiveIntensity: 0.85
+    });
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8, transparent: true, opacity: 0.32,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    });
+    const makeRail = (w, h, x, y, z, material) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.18), material);
+      mesh.position.set(x, y, z);
+      this.portalFrame.add(mesh);
+      return mesh;
+    };
+    // Main solid frame rails, with a second soft light outline.
+    makeRail(width, rail, 0, height / 2, 0, frameMat);
+    makeRail(width, rail, 0, -height / 2, 0, frameMat);
+    makeRail(rail, height, -width / 2, 0, 0, frameMat);
+    makeRail(rail, height, width / 2, 0, 0, frameMat);
+    const glowW = width + 0.32, glowH = height + 0.32, glowR = 0.055;
+    makeRail(glowW, glowR, 0, glowH / 2, -0.08, glowMat);
+    makeRail(glowW, glowR, 0, -glowH / 2, -0.08, glowMat);
+    makeRail(glowR, glowH, -glowW / 2, 0, -0.08, glowMat);
+    makeRail(glowR, glowH, glowW / 2, 0, -0.08, glowMat);
+
+    // Corner accents / portal nodes.
+    this.portalNodes = [];
+    const nodeGeo = new THREE.SphereGeometry(0.105, 12, 8);
+    const nodeMat = new THREE.MeshBasicMaterial({ color: 0x9be7ff });
+    for (const [x, y] of [[-width/2, -height/2], [-width/2, height/2], [width/2, -height/2], [width/2, height/2]]) {
+      const node = new THREE.Mesh(nodeGeo, nodeMat);
+      node.position.set(x, y, 0.03);
+      this.portalFrame.add(node);
+      this.portalNodes.push(node);
+    }
+    this.stageGroup.add(this.portalFrame);
+    this.portalFrame.userData.glowMaterial = glowMat;
+    this.portalFrame.userData.frameMaterial = frameMat;
   }
 
   _renderDemoFrame(timeSec) {
@@ -1379,6 +1489,22 @@ export class VideoPlayerDirector {
       this.silhouetteLight.color.copy(tel.dominantColor);
     }
 
+    // Keep the portal rigidly attached to the video screen transform.
+    if (this.portalFrame && this.voxelMesh) {
+      this.portalFrame.position.copy(this.voxelMesh.position);
+      this.portalFrame.rotation.copy(this.voxelMesh.rotation);
+      this.portalFrame.position.z += -0.42;
+      const pulse = 0.65 + energy.beatPulse * 1.25 + energy.bass * 0.35;
+      this.portalFrame.userData.frameMaterial.emissive.copy(tel.dominantColor).multiplyScalar(0.42 + pulse * 0.3);
+      this.portalFrame.userData.frameMaterial.color.copy(tel.dominantColor);
+      this.portalFrame.userData.glowMaterial.color.copy(tel.secondaryColor);
+      this.portalFrame.userData.glowMaterial.opacity = 0.18 + pulse * 0.17;
+      this.portalNodes?.forEach((node, i) => {
+        node.scale.setScalar(0.82 + energy.beatPulse * 0.7 + 0.12 * Math.sin(timeSec * 2 + i));
+        node.material.color.copy(i % 2 ? tel.secondaryColor : tel.dominantColor);
+      });
+    }
+
     this.stageRings.forEach((ring, i) => {
       ring.rotation.x += dt * (0.04 + i * 0.015) * (i % 2 ? -1 : 1);
       ring.rotation.y += dt * (0.06 + i * 0.02) * (i % 2 ? 1 : -1);
@@ -1451,7 +1577,7 @@ export class VideoPlayerDirector {
     }
 
     if (this.shotEl) {
-      this.shotEl.textContent = this.cameraRig.getCurrentShotLabel();
+      this.shotEl.textContent = `${this.cameraRig.getCurrentShotLabel()} · ${this.cameraRig.mode === 'idle' ? 'controles liberados para ajustes' : (this.cameraRig._decisionReason || 'direção automática')}`;
     }
   }
 }
