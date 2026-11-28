@@ -264,6 +264,20 @@ export class CinematicCameraRig {
       // the missing follow behavior: both camera and look target respond to content.
       this._focusTrackingOffset.set(liveX - composition.focus.x, liveY - composition.focus.y, 0).multiplyScalar(trackingGain * 0.34);
       this._desiredPos.add(this._focusTrackingOffset);
+
+      // MOTION-RESPONSIVE CAMERA: sparse optical-flow telemetry now controls
+      // physical follow translation and dynamic framing. Intensity scales the
+      // dolly-in; direction adds camera travel with cinematic damped lag.
+      const flowX = THREE.MathUtils.clamp(telemetry.flowX ?? 0, -1, 1);
+      const flowY = THREE.MathUtils.clamp(telemetry.flowY ?? 0, -1, 1);
+      const flowMag = THREE.MathUtils.clamp(telemetry.flowMagnitude ?? 0, 0, 1);
+      const flowResponse = Math.pow(flowMag, 0.72);
+      this._desiredPos.x += flowX * (0.85 + flowResponse * 2.15);
+      this._desiredPos.y -= flowY * (0.5 + flowResponse * 1.25);
+      // Faster action tightens framing; low-motion passages retain a wider shot.
+      this._desiredPos.z -= flowResponse * 2.65;
+      this._desiredTarget.x += flowX * 1.35;
+      this._desiredTarget.y -= flowY * 0.8;
       this._desiredTarget.x += composition.frameBias.x * 1.15;
       this._desiredTarget.y += composition.frameBias.y * 0.85;
 
@@ -276,16 +290,17 @@ export class CinematicCameraRig {
         this.camVel.z -= accent * (0.65 + (energy.bass ?? 0) * 0.55);
         this.camVel.x += (telemetry.velocityX ?? 0) * accent * 0.12;
       }
-      const actionEnergy = THREE.MathUtils.clamp(energyMix * 0.68 + (telemetry.motionEnergy ?? 0) * 0.32, 0, 1);
+      const flowMagnitude = THREE.MathUtils.clamp(telemetry.flowMagnitude ?? 0, 0, 1);
+      const actionEnergy = THREE.MathUtils.clamp(energyMix * 0.48 + (telemetry.motionEnergy ?? 0) * 0.24 + flowMagnitude * 0.52, 0, 1);
       const focusChange = Math.hypot((telemetry.focusX ?? 0) - this._lastAutoFocusX, (telemetry.focusY ?? 0) - this._lastAutoFocusY);
       this._lastAutoFocusX = telemetry.focusX ?? 0;
       this._lastAutoFocusY = telemetry.focusY ?? 0;
       const visualAccent = THREE.MathUtils.clamp((telemetry.flashDelta ?? 0) * 0.28 + (telemetry.visualChange ?? 0) * 0.48 + focusChange * 1.2, 0, 1);
       const push = actionEnergy * 1.45 + beatPulse * 0.7 + visualAccent * 0.35;
       this._desiredPos.z -= push * 0.7;
-      desiredFov = THREE.MathUtils.clamp(sample.fov - actionEnergy * 2.2 + beatPulse * 1.6 + visualAccent * 1.0, 29, 58);
+      desiredFov = THREE.MathUtils.clamp(sample.fov - flowMagnitude * 5.6 - actionEnergy * 1.7 + beatPulse * 1.6 + visualAccent * 1.0, 27, 58);
       desiredRoll = THREE.MathUtils.clamp(sample.roll + (telemetry.velocityX ?? 0) * 0.018 * (0.35 + actionEnergy) + beatPulse * 0.012, -0.055, 0.055);
-      omegaPos = 3.1 + (telemetry.motionEnergy ?? 0) * 0.7 + energyMix * 0.5 + focusChange * 0.25;
+      omegaPos = 3.1 + (telemetry.motionEnergy ?? 0) * 0.7 + energyMix * 0.5 + focusChange * 0.25 + flowMagnitude * 1.6;
     } else if (shot === 'idle') {
       // Idle: stable editing/parameter-adjustment framing with only a very slow ambient drift.
       // Keep the video relief readable; suppress focus chasing, beat impulses and dramatic camera motion.

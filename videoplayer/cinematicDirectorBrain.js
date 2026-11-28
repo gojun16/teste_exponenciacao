@@ -43,6 +43,8 @@ export class CinematicDirectorBrain {
     const flash = THREE.MathUtils.clamp(telemetry.flashDelta ?? 0, 0, 1);
     const visualChange = THREE.MathUtils.clamp(telemetry.visualChange ?? 0, 0, 1);
     const lateralMotion = Math.abs(telemetry.velocityX ?? 0);
+    const flowMagnitude = THREE.MathUtils.clamp(telemetry.flowMagnitude ?? 0, 0, 1);
+    const flowAcceleration = THREE.MathUtils.clamp(Math.max(0, telemetry.flowAcceleration ?? 0), 0, 1);
     const focusShift = Math.hypot((telemetry.focusX ?? 0) - this._lastFocusX, (telemetry.focusY ?? 0) - this._lastFocusY);
     const motionChange = Math.abs(motion - this._lastMotion);
     const flashRise = Math.max(0, flash - this._lastFlash);
@@ -52,19 +54,19 @@ export class CinematicDirectorBrain {
     this.eventStrength = Math.max(visualEvent, audioEvent);
     this.eventType = visualEvent > audioEvent ? 'visual' : audioEvent > 0.35 ? 'audio' : 'none';
 
-    const calm = 1 - THREE.MathUtils.clamp(motion * 0.72 + bass * 0.28, 0, 1);
+    const calm = 1 - THREE.MathUtils.clamp(motion * 0.48 + flowMagnitude * 0.42 + bass * 0.10, 0, 1);
     const compConfidence = composition.confidence ?? 0.5;
     const crowding = composition.crowding ?? scale;
     const focusConfidence = THREE.MathUtils.clamp(0.25 + scale * 0.35 + motion * 0.25 + focusShift * 0.4, 0, 1);
 
     this.scores = {
-      pushIn: 0.10 + motion * 0.24 + beat * 0.28 + bass * 0.20 + high * 0.08 + scale * 0.10 + visualEvent * 0.18,
+      pushIn: 0.10 + motion * 0.18 + flowMagnitude * 0.30 + flowAcceleration * 0.16 + beat * 0.24 + bass * 0.16 + high * 0.08 + scale * 0.10 + visualEvent * 0.18,
       pullOut: 0.12 + calm * 0.22 + coverage * 0.18 + (1 - scale) * 0.18 + crowding * 0.12 + (1 - compConfidence) * 0.08,
       arc: 0.10 + spread * 0.22 + colorConfidence * 0.14 + compConfidence * 0.14 + (1 - lateralMotion) * 0.08 + high * 0.10,
-      lateralTrack: 0.10 + lateralMotion * 0.36 + motion * 0.24 + Math.abs(telemetry.focusX ?? 0) * 0.12 + focusShift * 0.22,
+      lateralTrack: 0.10 + lateralMotion * 0.24 + flowMagnitude * 0.34 + motion * 0.18 + Math.abs(telemetry.focusX ?? 0) * 0.12 + focusShift * 0.22,
       craneReveal: 0.10 + coverage * 0.30 + spread * 0.20 + visualEvent * 0.16 + colorConfidence * 0.08,
       reveal: 0.12 + visualEvent * 0.34 + spread * 0.16 + beat * 0.12 + (1 - compConfidence) * 0.12,
-      trackFocus: 0.08 + focusConfidence * 0.32 + motion * 0.20 + focusShift * 0.32 + lateralMotion * 0.12,
+      trackFocus: 0.08 + focusConfidence * 0.26 + motion * 0.12 + flowMagnitude * 0.30 + flowAcceleration * 0.12 + focusShift * 0.24 + lateralMotion * 0.08,
       hold: 0.10 + calm * 0.38 + (1 - colorStrength) * 0.08 + (1 - motion) * 0.10
     };
 

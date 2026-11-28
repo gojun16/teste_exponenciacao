@@ -24,6 +24,8 @@ export class VideoFrameAnalyzer {
     this.texture.needsUpdate = true;
 
     this._prevLuma = new Float32Array(count);
+    this._prevFrameLuma = new Float32Array(count);
+    this._hasPrevFrame = false;
     // Track chroma too: equal-luminance color cuts are still meaningful visual events.
     this._prevColor = new Uint8Array(count * 3);
     this._hasPrevColor = false;
@@ -39,6 +41,10 @@ export class VideoFrameAnalyzer {
       focusY: 0,
       velocityX: 0,
       velocityY: 0,
+      flowX: 0,
+      flowY: 0,
+      flowMagnitude: 0,
+      flowAcceleration: 0,
       subjectScale: 0.5,
       motionEnergy: 0,
       avgLuma: 0.25,
@@ -67,10 +73,13 @@ export class VideoFrameAnalyzer {
     this._lastCentroidX = 0.5;
     this._lastCentroidY = 0.5;
     this._lastAvgLuma = 0.25;
+    this._lastFlowMagnitude = 0;
   }
 
   reset() {
     this._prevLuma.fill(0);
+    this._prevFrameLuma.fill(0);
+    this._hasPrevFrame = false;
     this._prevColor.fill(0);
     this._hasPrevColor = false;
     this._saliency.fill(0);
@@ -85,6 +94,11 @@ export class VideoFrameAnalyzer {
     this.telemetry.focusY = 0;
     this.telemetry.velocityX = 0;
     this.telemetry.velocityY = 0;
+    this.telemetry.flowX = 0;
+    this.telemetry.flowY = 0;
+    this.telemetry.flowMagnitude = 0;
+    this.telemetry.flowAcceleration = 0;
+    this._lastFlowMagnitude = 0;
     this.telemetry.motionEnergy = 0;
     this.telemetry.litRatio = 0.25;
     this.telemetry.domeExposure = 1.0;
@@ -221,6 +235,56 @@ export class VideoFrameAnalyzer {
     }
 
     this._hasPrevColor = true;
+
+    // Sparse block-matching optical flow: estimate directional motion instead of
+    // treating every changed pixel as directionless activity. Small blocks are
+    // matched within a limited neighborhood; confidence is weighted by texture.
+    let flowSumX = 0, flowSumY = 0, flowWeight = 0;
+    const search = 4;
+    if (this._hasPrevFrame) {
+      const block = 6, stride = 10;
+      for (let by = search + 2; by < h - search - 2; by += stride) {
+        for (let bx = search + 2; bx < w - search - 2; bx += stride) {
+          let texture = 0;
+          for (let yy = -2; yy <= 2; yy += 2) for (let xx = -2; xx <= 2; xx += 2) {
+            const q = (by + yy) * w + bx + xx;
+            texture += Math.abs(this._prevFrameLuma[q] - this._prevFrameLuma[q - 1])
+              + Math.abs(this._prevFrameLuma[q] - this._prevFrameLuma[q - w]);
+          }
+          const confidence = Math.min(1, texture * 1.7);
+          if (confidence < 0.045) continue;
+          let bestSad = Infinity, bestDx = 0, bestDy = 0;
+          for (let dy = -search; dy <= search; dy++) for (let dx = -search; dx <= search; dx++) {
+            let sad = 0, samples = 0;
+            for (let yy = -2; yy <= 2; yy++) for (let xx = -2; xx <= 2; xx++) {
+              const cur = lumaGrid[(by + yy) * w + bx + xx];
+              const prev = this._prevFrameLuma[(by + yy + dy) * w + bx + xx + dx];
+              sad += Math.abs(cur - prev); samples++;
+            }
+            sad /= samples;
+            if (sad < bestSad) { bestSad = sad; bestDx = dx; bestDy = dy; }
+          }
+          // Ignore ambiguous/no-motion matches and weight useful vectors by texture.
+          if (bestSad < 0.19 && (bestDx !== 0 || bestDy !== 0)) {
+            const wgt = confidence * (1 - Math.min(0.8, bestSad * 3));
+            flowSumX += bestDx * wgt; flowSumY += bestDy * wgt; flowWeight += wgt;
+          }
+        }
+      }
+    }
+    // Matcher offset is current->previous, so invert it to report previous->current motion.
+    const rawFlowX = flowWeight > 0 ? -flowSumX / flowWeight / search : 0;
+    const rawFlowY = flowWeight > 0 ? -flowSumY / flowWeight / search : 0;
+    const rawFlowMagnitude = Math.min(1, Math.hypot(rawFlowX, rawFlowY));
+    const flowAlpha = 1 - Math.exp(-Math.max(dt, stepInterval) * (rawFlowMagnitude > this.telemetry.flowMagnitude ? 10 : 4.5));
+    this.telemetry.flowX += (rawFlowX - this.telemetry.flowX) * flowAlpha;
+    this.telemetry.flowY += (rawFlowY - this.telemetry.flowY) * flowAlpha;
+    this.telemetry.flowMagnitude += (rawFlowMagnitude - this.telemetry.flowMagnitude) * flowAlpha;
+    this.telemetry.flowAcceleration += ((rawFlowMagnitude - this._lastFlowMagnitude) - this.telemetry.flowAcceleration) * 0.3;
+    this._lastFlowMagnitude = rawFlowMagnitude;
+    this._prevFrameLuma.set(lumaGrid);
+    this._hasPrevFrame = true;
+
     const avgLuma = sumLuma / total;
     const litRatio = litPixels / total;
     const avgSat = sumSat / total;
