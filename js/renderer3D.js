@@ -375,6 +375,10 @@ export class PowerRenderer3D {
           uniform vec3 uGridDims;
           uniform float uMosaicEnabled;
           uniform float uReliefStrength;
+          // VR uniforms must also be declared in the fragment shader: the
+          // tone-mapping block below reads them after color_fragment.
+          uniform float uIsVR;
+          uniform float uVRExposure;
           varying vec3 vGridCoord;
           varying vec3 vLocalNormal;
           varying vec3 vOutDir;`
